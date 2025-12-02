@@ -50,6 +50,7 @@ robotframework-dependencylibrary
 robotframework-extendedselenium2library
 robotframework-jsonlibrary
 robotframework-lint
+robotframework-mcp
 robotframework-metrics
 robotframework-pabot
 robotframework-requests
@@ -57,7 +58,6 @@ robotframework-robocop
 robotframework-selenium2library==3.0.0
 robotframework-seleniumlibrary
 robotframework-tidy
-robotmcp
 scikit-image
 seaborn
 selenium
