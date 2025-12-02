@@ -1,0 +1,9 @@
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8502
+  Network URL: http://172.31.223.150:8502
+
+Warning: Azure OpenAI client not available: Azure OpenAI endpoint and API key must be provided
+Notifications module not available. Notification features will be disabled.
+  Stopping...

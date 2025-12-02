@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agentic AI Workflow Visualization</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+
+        .header h1 {
+            color: #2c3e50;
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            color: #7f8c8d;
+            font-size: 1.2em;
+        }
+
+        .workflow-container {
+            display: grid;
+            grid-template-columns: 1fr 3fr;
+            gap: 30px;
+            margin-bottom: 40px;
+        }
+
+        .agents-panel {
+            background: #f8f9fa;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+        }
+
+        .agents-panel h2 {
+            color: #2c3e50;
+            margin-bottom: 20px;
+            font-size: 1.5em;
+        }
+
+        .agent-card {
+            background: white;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 15px;
+            border-left: 4px solid;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .agent-card:hover {
+            transform: translateX(5px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+        }
+
+        .agent-card.analyzer { border-left-color: #3498db; }
+        .agent-card.planner { border-left-color: #2ecc71; }
+        .agent-card.generator { border-left-color: #f39c12; }
+        .agent-card.reviewer { border-left-color: #e74c3c; }
+        .agent-card.optimizer { border-left-color: #9b59b6; }
+
+        .agent-card h3 {
+            color: #2c3e50;
+            margin-bottom: 8px;
+            font-size: 1.1em;
+        }
+
+        .agent-card p {
+            color: #7f8c8d;
+            font-size: 0.9em;
+        }
+
+        .workflow-flow {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+            overflow-x: auto;
+        }
+
+        .flow-diagram {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            min-width: 800px;
+        }
+
+        .flow-step {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            position: relative;
+        }
+
+        .flow-step::after {
+            content: '';
+            position: absolute;
+            bottom: -30px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 3px;
+            height: 20px;
+            background: #bdc3c7;
+        }
+
+        .flow-step:last-child::after {
+            display: none;
+        }
+
+        .step-icon {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5em;
+            color: white;
+            font-weight: bold;
+            flex-shrink: 0;
+        }
+
+        .step-content {
+            flex: 1;
+        }
+
+        .step-content h3 {
+            color: #2c3e50;
+            margin-bottom: 8px;
+            font-size: 1.3em;
+        }
+
+        .step-content p {
+            color: #7f8c8d;
+            margin-bottom: 10px;
+        }
+
+        .step-outputs {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .output-tag {
+            background: #ecf0f1;
+            padding: 4px 8px;
+            border-radius: 5px;
+            font-size: 0.8em;
+            color: #2c3e50;
+        }
+
+        .data-flow {
+            background: #f8f9fa;
+            border-radius: 15px;
+            padding: 25px;
+            margin-bottom: 40px;
+        }
+
+        .data-flow h2 {
+            color: #2c3e50;
+            margin-bottom: 20px;
+            font-size: 1.5em;
+        }
+
+        .data-types {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+        }
+
+        .data-type {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 3px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        .data-type h3 {
+            color: #2c3e50;
+            margin-bottom: 10px;
+        }
+
+        .data-type ul {
+            list-style: none;
+            padding: 0;
+        }
+
+        .data-type li {
+            padding: 5px 0;
+            border-bottom: 1px solid #ecf0f1;
+            color: #7f8c8d;
+        }
+
+        .data-type li:last-child {
+            border-bottom: none;
+        }
+
+        .metrics-dashboard {
+            background: #f8f9fa;
+            border-radius: 15px;
+            padding: 25px;
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+        }
+
+        .metric-card {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            text-align: center;
+            box-shadow: 0 3px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        .metric-value {
+            font-size: 2em;
+            font-weight: bold;
+            color: #2c3e50;
+            margin-bottom: 5px;
+        }
+
+        .metric-label {
+            color: #7f8c8d;
+            font-size: 0.9em;
+        }
+
+        .timeline {
+            background: #f8f9fa;
+            border-radius: 15px;
+            padding: 25px;
+            margin-top: 40px;
+        }
+
+        .timeline h2 {
+            color: #2c3e50;
+            margin-bottom: 20px;
+            font-size: 1.5em;
+        }
+
+        .timeline-item {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            padding: 15px;
+            background: white;
+            border-radius: 10px;
+            margin-bottom: 10px;
+            position: relative;
+        }
+
+        .timeline-item::before {
+            content: '';
+            position: absolute;
+            left: 30px;
+            top: 100%;
+            width: 3px;
+            height: 10px;
+            background: #bdc3c7;
+        }
+
+        .timeline-item:last-child::before {
+            display: none;
+        }
+
+        .timeline-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: #3498db;
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            flex-shrink: 0;
+        }
+
+        .timeline-content {
+            flex: 1;
+        }
+
+        .timeline-content h4 {
+            color: #2c3e50;
+            margin-bottom: 5px;
+        }
+
+        .timeline-content p {
+            color: #7f8c8d;
+            font-size: 0.9em;
+        }
+
+        .timeline-duration {
+            color: #e67e22;
+            font-weight: bold;
+        }
+
+        .interactive-controls {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: white;
+            border-radius: 10px;
+            padding: 15px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+            z-index: 1000;
+        }
+
+        .control-button {
+            background: #3498db;
+            color: white;
+            border: none;
+            padding: 8px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+            font-size: 0.9em;
+        }
+
+        .control-button:hover {
+            background: #2980b9;
+        }
+
+        .control-button.active {
+            background: #2ecc71;
+        }
+
+        .brand-context {
+            background: #f39c12;
+            color: white;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+
+        .brand-context h3 {
+            margin-bottom: 10px;
+        }
+
+        .brand-features {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .feature-tag {
+            background: rgba(255, 255, 255, 0.2);
+            padding: 4px 8px;
+            border-radius: 5px;
+            font-size: 0.8em;
+        }
+
+        @media (max-width: 768px) {
+            .workflow-container {
+                grid-template-columns: 1fr;
+            }
+
+            .flow-diagram {
+                min-width: auto;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 Agentic AI Test Automation Workflow</h1>
+            <p>Intelligent orchestration of AI Agents for dynamic test generation</p>
+        </div>
+
+        <div class="interactive-controls">
+            <button class="control-button active" onclick="showView('overview')">Overview</button>
+            <button class="control-button" onclick="showView('agents')">Agents</button>
+            <button class="control-button" onclick="showView('flow')">Flow</button>
+            <button class="control-button" onclick="showView('data')">Data</button>
+        </div>
+
+        <div id="overview-view">
+            <div class="workflow-container">
+                <div class="agents-panel">
+                    <h2>🎯 AI Agents</h2>
+
+                    <div class="agent-card analyzer" onclick="highlightAgent('analyzer')">
+                        <h3>📊 Requirement Analyzer</h3>
+                        <p>Analyzes requirements with brand context and business intelligence</p>
+                    </div>
+
+                    <div class="agent-card planner" onclick="highlightAgent('planner')">
+                        <h3>📋 Test Planner</h3>
+                        <p>Creates comprehensive test plans with strategy and timelines</p>
+                    </div>
+
+                    <div class="agent-card generator" onclick="highlightAgent('generator')">
+                        <h3>⚙️ Test Generator</h3>
+                        <p>Generates manual and automated test cases with Robot Framework</p>
+                    </div>
+
+                    <div class="agent-card reviewer" onclick="highlightAgent('reviewer')">
+                        <h3>🔍 Quality Reviewer</h3>
+                        <p>Reviews and validates test quality with AI-powered analysis</p>
+                    </div>
+
+                    <div class="agent-card optimizer" onclick="highlightAgent('optimizer')">
+                        <h3>🚀 Performance Optimizer</h3>
+                        <p>Optimizes workflow performance and resource utilization</p>
+                    </div>
+                </div>
+
+                <div class="workflow-flow">
+                    <h2>🔄 Workflow Process</h2>
+                    <div class="flow-diagram">
+                        <div class="flow-step">
+                            <div class="step-icon" style="background: #3498db;">1</div>
+                            <div class="step-content">
+                                <h3>📊 Requirement Analysis</h3>
+                                <p>Analyses requirements with brand context and business intelligence</p>
+                                <div class="step-outputs">
+                                    <span class="output-tag">Enhanced Analysis</span>
+                                    <span class="output-tag">Business Context</span>
+                                    <span class="output-tag">Test Priorities</span>
+                                    <span class="output-tag">Strategy Recommendations</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="flow-step">
+                            <div class="step-icon" style="background: #2ecc71;">2</div>
+                            <div class="step-content">
+                                <h3>📋 Test Planning</h3>
+                                <p>Creates comprehensive test plans with strategy and execution timelines</p>
+                                <div class="step-outputs">
+                                    <span class="output-tag">Test Plan Document</span>
+                                    <span class="output-tag">Test Strategy</span>
+                                    <span class="output-tag">Execution Timeline</span>
+                                    <span class="output-tag">Risk Assessment</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="flow-step">
+                            <div class="step-icon" style="background: #f39c12;">3</div>
+                            <div class="step-content">
+                                <h3>⚙️ Test Generation</h3>
+                                <p>Generates manual and automated test cases with Robot Framework scripts</p>
+                                <div class="step-outputs">
+                                    <span class="output-tag">Manual Test Cases</span>
+                                    <span class="output-tag">Automated Test Cases</span>
+                                    <span class="output-tag">Robot Framework Scripts</span>
+                                    <span class="output-tag">Test Data</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="flow-step">
+                            <div class="step-icon" style="background: #e74c3c;">4</div>
+                            <div class="step-content">
+                                <h3>🔍 Quality Review</h3>
+                                <p>Reviews and validates test quality with AI-powered analysis</p>
+                                <div class="step-outputs">
+                                    <span class="output-tag">Quality Metrics</span>
+                                    <span class="output-tag">Coverage Analysis</span>
+                                    <span class="output-tag">Improvement Suggestions</span>
+                                    <span class="output-tag">Final Validation</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="flow-step">
+                            <div class="step-icon" style="background: #9b59b6;">5</div>
+                            <div class="step-content">
+                                <h3>🚀 Performance Optimization</h3>
+                                <p>Optimizes workflow performance and learns from execution patterns</p>
+                                <div class="step-outputs">
+                                    <span class="output-tag">Performance Metrics</span>
+                                    <span class="output-tag">Optimization Recommendations</span>
+                                    <span class="output-tag">Learning Insights</span>
+                                    <span class="output-tag">Future Improvements</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="agents-view" style="display: none;">
+            <div class="brand-context">
+                <h3>🏢 Brand Context Support</h3>
+                <p>The workflow supports multiple brands with specialised testing approaches:</p>
+                <div class="brand-features">
+                    <span class="feature-tag">Bluehost (Web Hosting)</span>
+                    <span class="feature-tag">Domain.com (Domain Registration)</span>
+                    <span class="feature-tag">HostGator (Web Hosting)</span>
+                    <span class="feature-tag">Network Solutions (Domain & Hosting)</span>
+                    <span class="feature-tag">Register.com (Domain Services)</span>
+                    <span class="feature-tag">Web.com (Website Building)</span>
+                </div>
+            </div>
+
+            <div class="data-flow">
+                <h2>🎯 Agent Capabilities</h2>
+                <div class="data-types">
+                    <div class="data-type">
+                        <h3>📊 Requirement Analyzer</h3>
+                        <ul>
+                            <li>Brand context enhancement</li>
+                            <li>Business context extraction</li>
+                            <li>Test priority identification</li>
+                            <li>Strategy recommendations</li>
+                            <li>Complexity assessment</li>
+                            <li>Risk identification</li>
+                        </ul>
+                    </div>
+
+                    <div class="data-type">
+                        <h3>📋 Test Planner</h3>
+                        <ul>
+                            <li>Test plan structuring</li>
+                            <li>Strategy definition</li>
+                            <li>Scope determination</li>
+                            <li>Timeline generation</li>
+                            <li>Effort estimation</li>
+                            <li>Environment planning</li>
+                        </ul>
+                    </div>
+
+                    <div class="data-type">
+                        <h3>⚙️ Test Generator</h3>
+                        <ul>
+                            <li>Manual test case creation</li>
+                            <li>Automated test generation</li>
+                            <li>Robot Framework scripts</li>
+                            <li>Test data generation</li>
+                            <li>Coverage analysis</li>
+                            <li>Feasibility assessment</li>
+                        </ul>
+                    </div>
+
+                    <div class="data-type">
+                        <h3>🔍 Quality Reviewer</h3>
+                        <ul>
+                            <li>Quality metrics calculation</li>
+                            <li>Coverage validation</li>
+                            <li>Gap identification</li>
+                            <li>Improvement suggestions</li>
+                            <li>Compliance checking</li>
+                            <li>Best practice validation</li>
+                        </ul>
+                    </div>
+
+                    <div class="data-type">
+                        <h3>🚀 Performance Optimizer</h3>
+                        <ul>
+                            <li>Workflow performance analysis</li>
+                            <li>Resource utilization optimization</li>
+                            <li>Execution pattern learning</li>
+                            <li>Future improvement suggestions</li>
+                            <li>Performance benchmarks</li>
+                            <li>Feedback loop integration</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="flow-view" style="display: none;">
+            <div class="timeline">
+                <h2>⏱️ Execution Timeline</h2>
+                <div class="timeline-item">
+                    <div class="timeline-icon">1</div>
+                    <div class="timeline-content">
+                        <h4>Test Planning Phase</h4>
+                        <p>Finalize test plan, create test cases, set up environment, prepare test data</p>
+                        <span class="timeline-duration">3-5 days</span>
+                    </div>
+                </div>
+
+                <div class="timeline-item">
+                    <div class="timeline-icon">2</div>
+                    <div class="timeline-content">
+                        <h4>Component Testing</h4>
+                        <p>Execute unit tests, validate individual components, report defects</p>
+                        <span class="timeline-duration">5-7 days</span>
+                    </div>
+                </div>
+
+                <div class="timeline-item">
+                    <div class="timeline-icon">3</div>
+                    <div class="timeline-content">
+                        <h4>Integration Testing</h4>
+                        <p>Execute integration tests, validate end-to-end workflows, test APIs</p>
+                        <span class="timeline-duration">7-10 days</span>
+                    </div>
+                </div>
+
+                <div class="timeline-item">
+                    <div class="timeline-icon">4</div>
+                    <div class="timeline-content">
+                        <h4>User Acceptance Testing</h4>
+                        <p>Execute user scenarios, validate business workflows, gather feedback</p>
+                        <span class="timeline-duration">5-7 days</span>
+                    </div>
+                </div>
+
+                <div class="timeline-item">
+                    <div class="timeline-icon">5</div>
+                    <div class="timeline-content">
+                        <h4>Test Closure</h4>
+                        <p>Complete execution, generate reports, document lessons learned</p>
+                        <span class="timeline-duration">2-3 days</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="data-view" style="display: none;">
+            <div class="data-flow">
+                <h2>📊 Data Flow & Transformations</h2>
+                <div class="data-types">
+                    <div class="data-type">
+                        <h3>📥 Input Data</h3>
+                        <ul>
+                            <li>Requirements specification</li>
+                            <li>Brand context configuration</li>
+                            <li>Test configuration parameters</li>
+                            <li>Component specifications</li>
+                            <li>Business rules</li>
+                            <li>Integration requirements</li>
+                        </ul>
+                    </div>
+
+                    <div class="data-type">
+                        <h3>🔄 Processing</h3>
+                        <ul>
+                            <li>Context enhancement</li>
+                            <li>Priority calculation</li>
+                            <li>Strategy formulation</li>
+                            <li>Test case generation</li>
+                            <li>Automation feasibility</li>
+                            <li>Quality validation</li>
+                        </ul>
+                    </div>
+
+                    <div class="data-type">
+                        <h3>📤 Output Artifacts</h3>
+                        <ul>
+                            <li>Test plan documents</li>
+                            <li>Manual test cases</li>
+                            <li>Automated test scripts</li>
+                            <li>Robot Framework files</li>
+                            <li>Coverage reports</li>
+                            <li>Quality metrics</li>
+                        </ul>
+                    </div>
+
+                    <div class="data-type">
+                        <h3>📈 Metrics & Analytics</h3>
+                        <ul>
+                            <li>Test coverage percentage</li>
+                            <li>Automation feasibility score</li>
+                            <li>Quality confidence rating</li>
+                            <li>Execution time estimates</li>
+                            <li>Risk assessment scores</li>
+                            <li>Performance benchmarks</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <div class="metrics-dashboard">
+                <h2>📊 Key Metrics Dashboard</h2>
+                <div class="metrics-grid">
+                    <div class="metric-card">
+                        <div class="metric-value">5</div>
+                        <div class="metric-label">AI Agents</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value">80%</div>
+                        <div class="metric-label">Target Coverage</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value">15-25</div>
+                        <div class="metric-label">Days Timeline</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value">6</div>
+                        <div class="metric-label">Brand Support</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value">40+</div>
+                        <div class="metric-label">Hours Effort</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value">2-3</div>
+                        <div class="metric-label">Team Size</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function showView(viewName) {
+            // Hide all views
+            document.querySelectorAll('[id$="-view"]').forEach(view => {
+                view.style.display = 'none';
+            });
+
+            // Show selected view
+            document.getElementById(viewName + '-view').style.display = 'block';
+
+            // Update active button
+            document.querySelectorAll('.control-button').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            event.target.classList.add('active');
+        }
+
+        function highlightAgent(agentType) {
+            // Remove existing highlights
+            document.querySelectorAll('.agent-card').forEach(card => {
+                card.style.transform = '';
+                card.style.boxShadow = '';
+            });
+
+            // Highlight selected agent
+            const selectedCard = document.querySelector(`.agent-card.${agentType}`);
+            selectedCard.style.transform = 'scale(1.05)';
+            selectedCard.style.boxShadow = '0 10px 25px rgba(0, 0, 0, 0.2)';
+
+            // Highlight corresponding flow step
+            document.querySelectorAll('.flow-step').forEach((step, index) => {
+                step.style.background = '#f8f9fa';
+            });
+
+            const agentIndex = ['analyzer', 'planner', 'generator', 'executor', 'reviewer', 'optimizer'].indexOf(agentType);
+            if (agentIndex !== -1) {
+                document.querySelectorAll('.flow-step')[agentIndex].style.background = '#e3f2fd';
+            }
+        }
+
+        // Add some interactivity
+        document.addEventListener('DOMContentLoaded', function() {
+            // Add hover effects to flow steps
+            document.querySelectorAll('.flow-step').forEach(step => {
+                step.addEventListener('mouseenter', function() {
+                    this.style.transform = 'translateY(-5px)';
+                    this.style.boxShadow = '0 10px 25px rgba(0, 0, 0, 0.1)';
+                });
+
+                step.addEventListener('mouseleave', function() {
+                    this.style.transform = '';
+                    this.style.boxShadow = '';
+                });
+            });
+
+            // Add click to expand functionality
+            document.querySelectorAll('.data-type').forEach(type => {
+                type.addEventListener('click', function() {
+                    this.style.transform = this.style.transform === 'scale(1.05)' ? '' : 'scale(1.05)';
+                });
+            });
+        });
+    </script>
+</body>
+</html>

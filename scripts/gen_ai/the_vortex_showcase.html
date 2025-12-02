@@ -1,0 +1,1536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🌀 The Vortex - AI-Powered Test Automation Ecosystem</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary-color: #EC5328;
+            --secondary-color: #D63384;
+            --accent-color: #FF6B35;
+            --success-color: #10b981;
+            --warning-color: #f59e0b;
+            --error-color: #ef4444;
+            --dark-bg: #0f172a;
+            --dark-surface: #1e293b;
+            --dark-surface-2: #334155;
+            --light-text: #f8fafc;
+            --light-text-secondary: #cbd5e1;
+            --gradient-primary: linear-gradient(135deg, #EC5328 0%, #D63384 100%);
+            --gradient-secondary: linear-gradient(135deg, #FF6B35 0%, #EC5328 100%);
+            --gradient-accent: linear-gradient(135deg, #FF6B35 0%, #FFA500 100%);
+            --gradient-dark: linear-gradient(135deg, #0c0c0c 0%, #1a1a2e 100%);
+            --box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+            --box-shadow-lg: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--dark-bg);
+            color: var(--light-text);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        /* Animated Background */
+        .animated-bg {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -1;
+            background: var(--gradient-dark);
+        }
+
+        .animated-bg::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background:
+                radial-gradient(circle at 20% 50%, rgba(120, 119, 198, 0.3) 0%, transparent 50%),
+                radial-gradient(circle at 80% 20%, rgba(255, 119, 198, 0.3) 0%, transparent 50%),
+                radial-gradient(circle at 40% 80%, rgba(120, 219, 255, 0.3) 0%, transparent 50%);
+            animation: float 20s ease-in-out infinite;
+        }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(0px) rotate(0deg); }
+            33% { transform: translateY(-30px) rotate(2deg); }
+            66% { transform: translateY(-10px) rotate(-1deg); }
+        }
+
+        /* Navigation */
+        .navbar {
+            position: fixed;
+            top: 0;
+            width: 100%;
+            background: rgba(15, 23, 42, 0.95);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            z-index: 1000;
+            transition: all 0.3s ease;
+        }
+
+        .nav-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo {
+            font-size: 1.5rem;
+            font-weight: 800;
+            background: var(--gradient-primary);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .nav-links {
+            display: flex;
+            list-style: none;
+            gap: 2rem;
+        }
+
+        .nav-links a {
+            color: var(--light-text-secondary);
+            text-decoration: none;
+            transition: color 0.3s ease;
+            font-weight: 500;
+        }
+
+        .nav-links a:hover {
+            color: var(--primary-color);
+        }
+
+        /* Container */
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 2rem;
+        }
+
+        /* Hero Section */
+        .hero {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            position: relative;
+            padding: 6rem 0;
+        }
+
+        .hero-content h1 {
+            font-size: clamp(3rem, 8vw, 6rem);
+            font-weight: 800;
+            margin-bottom: 1rem;
+            background: var(--gradient-primary);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            line-height: 1.1;
+        }
+
+        .hero-content .subtitle {
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            color: var(--light-text);
+        }
+
+        .hero-content .description {
+            font-size: 1.25rem;
+            color: var(--light-text-secondary);
+            margin-bottom: 3rem;
+            max-width: 800px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .cta-buttons {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            padding: 1rem 2rem;
+            border-radius: 0.75rem;
+            font-weight: 600;
+            text-decoration: none;
+            transition: all 0.3s ease;
+            border: none;
+            cursor: pointer;
+            font-size: 1.1rem;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .btn-primary {
+            background: var(--gradient-primary);
+            color: white;
+            box-shadow: var(--box-shadow);
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.1);
+            color: var(--light-text);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: var(--box-shadow-lg);
+        }
+
+        /* Stats Section */
+        .stats {
+            padding: 4rem 0;
+            background: rgba(30, 41, 59, 0.5);
+            backdrop-filter: blur(10px);
+            margin: 4rem 0;
+            border-radius: 2rem;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 2rem;
+            text-align: center;
+        }
+
+        .stat-item h3 {
+            font-size: 3rem;
+            font-weight: 800;
+            background: var(--gradient-accent);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 0.5rem;
+        }
+
+        .stat-item p {
+            color: var(--light-text-secondary);
+            font-weight: 500;
+        }
+
+        /* Section Styles */
+        .section {
+            padding: 6rem 0;
+        }
+
+        .section-header {
+            text-align: center;
+            margin-bottom: 4rem;
+        }
+
+        .section-header h2 {
+            font-size: clamp(2.5rem, 5vw, 4rem);
+            font-weight: 800;
+            margin-bottom: 1rem;
+            background: var(--gradient-secondary);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .section-header p {
+            font-size: 1.25rem;
+            color: var(--light-text-secondary);
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        /* Feature Grid */
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 2rem;
+            margin-top: 3rem;
+        }
+
+        .feature-card {
+            background: var(--dark-surface);
+            border-radius: 1.5rem;
+            padding: 2rem;
+            box-shadow: var(--box-shadow);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .feature-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: var(--gradient-primary);
+        }
+
+        .feature-card:hover {
+            transform: translateY(-5px);
+            box-shadow: var(--box-shadow-lg);
+        }
+
+        .feature-icon {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+            background: var(--gradient-accent);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .feature-card h3 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+            color: var(--light-text);
+        }
+
+        .feature-card p {
+            color: var(--light-text-secondary);
+            line-height: 1.7;
+        }
+
+        /* Tech Stack */
+        .tech-stack {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1.5rem;
+            margin-top: 3rem;
+        }
+
+        .tech-category {
+            background: var(--dark-surface);
+            border-radius: 1rem;
+            padding: 2rem;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .tech-category h4 {
+            font-size: 1.25rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+            color: var(--primary-color);
+        }
+
+        .tech-list {
+            list-style: none;
+        }
+
+        .tech-list li {
+            padding: 0.5rem 0;
+            color: var(--light-text-secondary);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .tech-list li:last-child {
+            border-bottom: none;
+        }
+
+        /* Use Cases Grid */
+        .use-cases-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 2rem;
+            margin-top: 3rem;
+        }
+
+        .use-case-card {
+            background: var(--dark-surface);
+            border-radius: 1.5rem;
+            padding: 2rem;
+            box-shadow: var(--box-shadow);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .use-case-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: var(--gradient-secondary);
+        }
+
+        .use-case-card:hover {
+            transform: translateY(-3px);
+            box-shadow: var(--box-shadow-lg);
+        }
+
+        .use-case-number {
+            position: absolute;
+            top: 1rem;
+            right: 1rem;
+            background: var(--gradient-primary);
+            color: white;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 1.1rem;
+        }
+
+        .use-case-card h4 {
+            font-size: 1.4rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+            color: var(--light-text);
+            padding-right: 3rem;
+        }
+
+        .use-case-card p {
+            color: var(--light-text-secondary);
+            line-height: 1.7;
+            margin-bottom: 1rem;
+        }
+
+        .file-path {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.9rem;
+            color: var(--accent-color);
+            background: rgba(6, 182, 212, 0.1);
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            border: 1px solid rgba(6, 182, 212, 0.2);
+        }
+
+        /* Architecture Diagram */
+        .architecture-diagram {
+            background: var(--dark-surface);
+            border-radius: 1.5rem;
+            padding: 3rem;
+            margin: 3rem 0;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .architecture-diagram::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: var(--gradient-accent);
+        }
+
+        .diagram-layer {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 1rem;
+            padding: 2rem;
+            margin: 1rem 0;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .diagram-layer h4 {
+            font-size: 1.3rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+            color: var(--primary-color);
+        }
+
+        .layer-components {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
+        }
+
+        .component {
+            background: rgba(99, 102, 241, 0.2);
+            color: var(--light-text);
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            font-size: 0.9rem;
+            font-weight: 500;
+            border: 1px solid rgba(99, 102, 241, 0.3);
+        }
+
+        /* Brand Section */
+        .brand-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 2rem;
+            margin-top: 3rem;
+        }
+
+        .brand-card {
+            background: var(--dark-surface);
+            border-radius: 1rem;
+            padding: 2rem;
+            text-align: center;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            transition: all 0.3s ease;
+        }
+
+        .brand-card:hover {
+            transform: translateY(-3px);
+            box-shadow: var(--box-shadow);
+        }
+
+        .brand-icon {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+            background: var(--gradient-primary);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .brand-card h4 {
+            font-size: 1.3rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+            color: var(--light-text);
+        }
+
+        .brand-features {
+            list-style: none;
+            text-align: left;
+        }
+
+        .brand-features li {
+            padding: 0.5rem 0;
+            color: var(--light-text-secondary);
+            position: relative;
+            padding-left: 1.5rem;
+        }
+
+        .brand-features li::before {
+            content: '✓';
+            position: absolute;
+            left: 0;
+            color: var(--success-color);
+            font-weight: bold;
+        }
+
+        /* Footer */
+        .footer {
+            background: var(--dark-surface);
+            padding: 4rem 0 2rem;
+            margin-top: 6rem;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .footer-content {
+            text-align: center;
+        }
+
+        .footer-logo {
+            font-size: 2rem;
+            font-weight: 800;
+            background: var(--gradient-primary);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 1rem;
+        }
+
+        .footer-text {
+            color: var(--light-text-secondary);
+            margin-bottom: 2rem;
+            max-width: 600px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .footer-links {
+            display: flex;
+            justify-content: center;
+            gap: 2rem;
+            margin-bottom: 2rem;
+            flex-wrap: wrap;
+        }
+
+        .footer-links a {
+            color: var(--light-text-secondary);
+            text-decoration: none;
+            transition: color 0.3s ease;
+        }
+
+        .footer-links a:hover {
+            color: var(--primary-color);
+        }
+
+        .footer-bottom {
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            padding-top: 2rem;
+            color: var(--light-text-secondary);
+            text-align: center;
+        }
+
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            .nav-links {
+                display: none;
+            }
+
+            .hero-content h1 {
+                font-size: 3rem;
+            }
+
+            .cta-buttons {
+                flex-direction: column;
+                align-items: center;
+            }
+
+            .feature-grid,
+            .use-cases-grid,
+            .tech-stack,
+            .brand-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .container {
+                padding: 0 1rem;
+            }
+
+            .section {
+                padding: 4rem 0;
+            }
+        }
+
+        /* Scroll animations */
+        .fade-in {
+            opacity: 0;
+            transform: translateY(30px);
+            transition: all 0.6s ease;
+        }
+
+        .fade-in.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        /* Code blocks */
+        .code-block {
+            background: #1e1e1e;
+            border-radius: 0.75rem;
+            padding: 2rem;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            color: #d4d4d4;
+            overflow-x: auto;
+            overflow-y: auto;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            margin: 2rem 0;
+            white-space: pre;
+            line-height: 1.4;
+            max-height: 600px;
+        }
+
+        .code-block::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        .code-block::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+        }
+
+        .code-block::-webkit-scrollbar-thumb {
+            background: var(--primary-color);
+            border-radius: 4px;
+        }
+
+        .code-block::-webkit-scrollbar-thumb:hover {
+            background: var(--accent-color);
+        }
+    </style>
+</head>
+<body>
+    <div class="animated-bg"></div>
+
+    <!-- Navigation -->
+    <nav class="navbar">
+        <div class="nav-container">
+            <div class="logo">🌀 The Vortex</div>
+            <ul class="nav-links">
+                <li><a href="#overview">Overview</a></li>
+                <li><a href="#features">Features</a></li>
+                <li><a href="#architecture">Architecture</a></li>
+                <li><a href="#use-cases">Use Cases</a></li>
+                <li><a href="#brands">Brands</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="hero" id="hero">
+        <div class="container">
+            <div class="hero-content fade-in">
+                <h1>🌀 The Vortex</h1>
+                <div class="subtitle">Virtual Orchestrator of Responsive Technical Experiences and eXecution</div>
+                <p class="description">
+                    An AI-powered portal to smarter, faster & better Engineering.
+                    Prepare to explore a universe of possibilities where Technology 🤝 Innovation
+                </p>
+                <div class="cta-buttons">
+                    <a href="#features" class="btn btn-primary">
+                        <i class="fas fa-rocket"></i>
+                        Explore Features
+                    </a>
+                    <a href="#architecture" class="btn btn-secondary">
+                        <i class="fas fa-cogs"></i>
+                        View Architecture
+                    </a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Stats Section -->
+    <section class="container fade-in">
+        <div class="stats">
+            <div class="stats-grid">
+                <div class="stat-item">
+                    <h3>22+</h3>
+                    <p>AI-Powered Use Cases</p>
+                </div>
+                <div class="stat-item">
+                    <h3>8+</h3>
+                    <p>Document Parsers</p>
+                </div>
+                <div class="stat-item">
+                    <h3>6+</h3>
+                    <p>Brand Integrations</p>
+                </div>
+                <div class="stat-item">
+                    <h3>4+</h3>
+                    <p>AI Agent Types</p>
+                </div>
+                <div class="stat-item">
+                    <h3>10+</h3>
+                    <p>File Format Support</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Executive Overview -->
+    <section class="section" id="overview">
+        <div class="container">
+            <div class="section-header fade-in">
+                <h2>🔍 Executive Overview</h2>
+                <p>A revolutionary AI-powered test automation ecosystem that transforms quality assurance through cutting-edge AI, agentic workflows, and retrieval-augmented generation technologies.</p>
+            </div>
+
+            <div class="feature-grid">
+                <div class="feature-card fade-in">
+                    <div class="feature-icon">🎯</div>
+                    <h3>Mission Statement</h3>
+                    <p>To democratize intelligent test automation by providing an AI-first platform that understands, learns, and evolves with your testing requirements, making quality engineering accessible to all skill levels.</p>
+                </div>
+
+                <div class="feature-card fade-in">
+                    <div class="feature-icon">⚡</div>
+                    <h3>Core Value Proposition</h3>
+                    <p>Intelligence-First approach with AI agents that understand context, self-healing tests, multi-modal support, brand-aware intelligence, and enterprise-ready scalability with up to 200MB file support.</p>
+                </div>
+
+                <div class="feature-card fade-in">
+                    <div class="feature-icon">🧠</div>
+                    <h3>AI-Powered Intelligence</h3>
+                    <p>Built on Azure OpenAI's GPT-4.1-mini model with advanced RAG capabilities, 4 specialized AI agents, and natural language processing for deep context understanding.</p>
+                </div>
+
+                <div class="feature-card fade-in">
+                    <div class="feature-icon">🤖</div>
+                    <h3>Agentic AI Workflow</h3>
+                    <p>Intelligent AI agents working together: Analyzer Agent for requirements enhancement, Planner Agent for test strategies, Generator Agent for test creation, and Optimizer Agent for refinement.</p>
+                </div>
+
+                <div class="feature-card fade-in">
+                    <div class="feature-icon">🏢</div>
+                    <h3>Brand-Aware Intelligence</h3>
+                    <p>Specialized understanding for web hosting and domain brands including Bluehost, HostGator, Domain.com and Network Solutions with industry-specific knowledge.</p>
+                </div>
+
+                <div class="feature-card fade-in">
+                    <div class="feature-icon">📁</div>
+                    <h3>Enhanced Document Support</h3>
+                    <p>Support for 10+ file formats including traditional documents (PDF, DOCX), spreadsheets (XLSX, CSV), structured data (JSON, YAML), web content, and API integrations with Figma and Confluence.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Architecture Section -->
+    <section class="section" id="architecture">
+        <div class="container">
+            <div class="section-header fade-in">
+                <h2>🏗️ Architecture & Tech Stack</h2>
+                <p>A sophisticated multi-layered architecture designed for scalability, intelligence, and seamless integration.</p>
+            </div>
+
+            <div class="architecture-diagram fade-in">
+                <div class="diagram-layer">
+                    <h4>🧠 AI & Machine Learning Layer</h4>
+                    <div class="layer-components">
+                        <span class="component">Azure OpenAI Integration</span>
+                        <span class="component">Multi-Model AI Support</span>
+                        <span class="component">RAG with FAISS</span>
+                        <span class="component">Agentic AI Workflows</span>
+                        <span class="component">Natural Language Processing</span>
+                        <span class="component">Visual AI Testing</span>
+                        <span class="component">Machine Learning Models</span>
+                        <span class="component">Vector Embeddings</span>
+                    </div>
+                </div>
+
+                <div class="diagram-layer">
+                    <h4>🔧 Core Technologies & Frameworks</h4>
+                    <div class="layer-components">
+                        <span class="component">Python 3.13+</span>
+                        <span class="component">Streamlit 1.28+</span>
+                        <span class="component">Robot Framework 7.1+</span>
+                        <span class="component">FastAPI</span>
+                        <span class="component">Pandas</span>
+                        <span class="component">NumPy</span>
+                        <span class="component">PyTorch</span>
+                        <span class="component">Scikit-learn</span>
+                    </div>
+                </div>
+
+                <div class="diagram-layer">
+                    <h4>🤖 AI Service Providers & Models</h4>
+                    <div class="layer-components">
+                        <span class="component">Azure OpenAI</span>
+                        <span class="component">OpenAI API</span>
+                        <span class="component">Anthropic Claude</span>
+                        <span class="component">Google Gemini</span>
+                        <span class="component">Hugging Face Transformers</span>
+                        <span class="component">Custom Fine-tuned Models</span>
+                    </div>
+                </div>
+
+                <div class="diagram-layer">
+                    <h4>📊 Data Storage & Management</h4>
+                    <div class="layer-components">
+                        <span class="component">FAISS Vector Database</span>
+                        <span class="component">SQLite</span>
+                        <span class="component">JSON Configuration</span>
+                        <span class="component">YAML Configs</span>
+                        <span class="component">Vector Embeddings</span>
+                        <span class="component">Document Parsing</span>
+                        <span class="component">Intelligent Caching</span>
+                        <span class="component">File System Storage</span>
+                    </div>
+                </div>
+
+                <div class="diagram-layer">
+                    <h4>🌐 Integration Ecosystem & APIs</h4>
+                    <div class="layer-components">
+                        <span class="component">REST APIs</span>
+                        <span class="component">GraphQL</span>
+                        <span class="component">Webhook Support</span>
+                        <span class="component">WebSocket</span>
+                        <span class="component">gRPC</span>
+                    </div>
+                </div>
+
+                <div class="diagram-layer">
+                    <h4>☁️ Cloud & Infrastructure</h4>
+                    <div class="layer-components">
+                        <span class="component">Docker & Containerization</span>
+                        <span class="component">Kubernetes</span>
+                        <span class="component">Azure Cloud Services</span>
+                        <span class="component">Jenkins CI/CD</span>
+                        <span class="component">GitHub Actions</span>
+                        <span class="component">OpenShift</span>
+                    </div>
+                </div>
+
+                <div class="diagram-layer">
+                    <h4>🔍 Testing & Quality Assurance</h4>
+                    <div class="layer-components">
+                        <span class="component">BrowserStack</span>
+                        <span class="component">Selenium WebDriver</span>
+                        <span class="component">Playwright</span>
+                        <span class="component">Appium</span>
+                        <span class="component">Postman/Newman</span>
+                        <span class="component">JMeter</span>
+                    </div>
+                </div>
+
+                <div class="diagram-layer">
+                    <h4>📈 Observability & Monitoring</h4>
+                    <div class="layer-components">
+                        <span class="component">Grafana</span>
+                        <span class="component">Prometheus</span>
+                        <span class="component">Elastic Stack (ELK)</span>
+                        <span class="component">Jaeger</span>
+                        <span class="component">New Relic</span>
+                        <span class="component">Custom Metrics</span>
+                    </div>
+                </div>
+
+                <div class="diagram-layer">
+                    <h4>📱 Communication & Collaboration</h4>
+                    <div class="layer-components">
+                        <span class="component">Microsoft Teams</span>
+                        <span class="component">Slack Integration</span>
+                        <span class="component">Email Notifications</span>
+                        <span class="component">Discord Webhooks</span>
+                        <span class="component">SMS Alerts</span>
+                    </div>
+                </div>
+
+                <div class="diagram-layer">
+                    <h4>🔒 Security & Authentication</h4>
+                    <div class="layer-components">
+                        <span class="component">OAuth 2.0</span>
+                        <span class="component">JWT Tokens</span>
+                        <span class="component">Azure Active Directory</span>
+                        <span class="component">RBAC</span>
+                        <span class="component">API Rate Limiting</span>
+                        <span class="component">TLS/SSL</span>
+                    </div>
+                </div>
+
+                <div class="diagram-layer">
+                    <h4>🎨 Frontend & User Experience</h4>
+                    <div class="layer-components">
+                        <span class="component">HTML5/CSS3</span>
+                        <span class="component">JavaScript ES6+</span>
+                        <span class="component">Responsive Design</span>
+                        <span class="component">Progressive Web App</span>
+                        <span class="component">Dark/Light Themes</span>
+                    </div>
+                </div>
+
+                <div class="diagram-layer">
+                    <h4>📄 Document Processing & Parsing</h4>
+                    <div class="layer-components">
+                        <span class="component">PyPDF2/PDFPlumber</span>
+                        <span class="component">python-docx</span>
+                        <span class="component">openpyxl</span>
+                        <span class="component">Pillow (PIL)</span>
+                        <span class="component">pytesseract OCR</span>
+                        <span class="component">BeautifulSoup</span>
+                        <span class="component">Figma API</span>
+                        <span class="component">Confluence API</span>
+                    </div>
+                </div>
+
+                <div class="diagram-layer">
+                    <h4>🔄 Workflow & Automation</h4>
+                    <div class="layer-components">
+                        <span class="component">Celery</span>
+                        <span class="component">Apache Airflow</span>
+                        <span class="component">Cron Jobs</span>
+                        <span class="component">Event-Driven Architecture</span>
+                        <span class="component">Message Queues</span>
+                    </div>
+                </div>
+
+                <div class="diagram-layer">
+                    <h4>🧪 Development & Testing Tools</h4>
+                    <div class="layer-components">
+                        <span class="component">pytest</span>
+                        <span class="component">Black</span>
+                        <span class="component">Flake8</span>
+                        <span class="component">mypy</span>
+                        <span class="component">pre-commit</span>
+                        <span class="component">Coverage.py</span>
+                    </div>
+                </div>
+
+                <div class="diagram-layer">
+                    <h4>📦 Package Management</h4>
+                    <div class="layer-components">
+                        <span class="component">pip</span>
+                        <span class="component">Poetry</span>
+                        <span class="component">Virtual Environments</span>
+                        <span class="component">Docker Compose</span>
+                        <span class="component">Requirements.txt</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features Section -->
+    <section class="section" id="features">
+        <div class="container">
+            <div class="section-header fade-in">
+                <h2>🚀 Core AI Capabilities</h2>
+                <p>Advanced AI features that make The Vortex the most intelligent test automation platform available.</p>
+            </div>
+
+            <div class="feature-grid">
+                <div class="feature-card fade-in">
+                    <div class="feature-icon">🤖</div>
+                    <h3>Generative AI Integration</h3>
+                    <p>Leverages Azure OpenAI's GPT-4.1-mini for intelligent test generation, natural language understanding, code generation, and automated documentation synthesis.</p>
+                </div>
+
+                <div class="feature-card fade-in">
+                    <div class="feature-icon">🔍</div>
+                    <h3>Retrieval-Augmented Generation (RAG)</h3>
+                    <p>Advanced RAG implementation with FAISS vector database, semantic similarity search, multi-source knowledge integration, and context-aware retrieval strategies.</p>
+                </div>
+
+                <div class="feature-card fade-in">
+                    <div class="feature-icon">🎯</div>
+                    <h3>Agentic AI Workflows</h3>
+                    <p>Autonomous AI agents that plan test strategies, execute complex workflows, make intelligent decisions, and continuously self-optimize through feedback loops.</p>
+                </div>
+
+                <div class="feature-card fade-in">
+                    <div class="feature-icon">📖</div>
+                    <h3>Multi-Format Document Processing</h3>
+                    <p>Comprehensive support for text documents, PDFs, Word files, images, Excel spreadsheets, Postman collections, and API specifications with intelligent parsing.</p>
+                </div>
+
+                <div class="feature-card fade-in">
+                    <div class="feature-icon">🎮</div>
+                    <h3>Streamlit-Powered Portal</h3>
+                    <p>Modern, responsive web interface with dark/light themes, real-time updates, interactive dashboards, and organized workflow management capabilities.</p>
+                </div>
+
+                <div class="feature-card fade-in">
+                    <div class="feature-icon">📊</div>
+                    <h3>Analytics & Monitoring</h3>
+                    <p>Comprehensive monitoring with usage analytics, test execution reports, performance dashboards, and integrated user feedback for continuous improvement.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Use Cases Section -->
+    <section class="section" id="use-cases">
+        <div class="container">
+            <div class="section-header fade-in">
+                <h2>🎯 Advanced Use Cases & Applications</h2>
+                <p>22+ specialized AI applications that cover every aspect of modern test automation and quality assurance with intelligent workflows.</p>
+            </div>
+
+            <div class="use-cases-grid">
+                <div class="use-case-card fade-in">
+                    <div class="use-case-number">1</div>
+                    <h4>🎯 Dynamic Test Case Generation</h4>
+                    <p>Real-time test case creation based on changing requirements with context-aware test scenario generation, multi-format input support, and brand-specific test pattern recognition.</p>
+                    <div class="file-path">use_cases/dynamic_tc_generation.py</div>
+                </div>
+
+                <div class="use-case-card fade-in">
+                    <div class="use-case-number">2</div>
+                    <h4>🤖 AI Cross-Platform Orchestrator</h4>
+                    <p>Intelligent cross-browser and cross-device test coordination with platform-specific optimization strategies, automated environment provisioning, and resource allocation optimization.</p>
+                    <div class="file-path">use_cases/ai_cross_platform_orchestrator.py</div>
+                </div>
+
+                <div class="use-case-card fade-in">
+                    <div class="use-case-number">3</div>
+                    <h4>🛡️ AI Quality Assurance Guardian</h4>
+                    <p>Intelligent quality gate management with risk-based testing prioritization, automated quality metrics analysis, and predictive quality assessment capabilities.</p>
+                    <div class="file-path">use_cases/ai_quality_assurance_guardian.py</div>
+                </div>
+
+                <div class="use-case-card fade-in">
+                    <div class="use-case-number">4</div>
+                    <h4>🌐 AI Test Environment Manager</h4>
+                    <p>Automated test environment provisioning and management with intelligent resource allocation, environment health monitoring, and configuration management.</p>
+                    <div class="file-path">use_cases/ai_test_environment_manager.py</div>
+                </div>
+
+                <div class="use-case-card fade-in">
+                    <div class="use-case-number">5</div>
+                    <h4>🎮 AI Test Execution Orchestrator</h4>
+                    <p>Advanced test execution management with intelligent scheduling, parallel execution optimization, and real-time monitoring and reporting capabilities.</p>
+                    <div class="file-path">use_cases/ai_test_execution_orchestrator.py</div>
+                </div>
+
+                <div class="use-case-card fade-in">
+                    <div class="use-case-number">6</div>
+                    <h4>🔄 Self-Healing Tests</h4>
+                    <p>Automatic test repair and maintenance with intelligent selector strategy updates, dynamic wait condition optimization, and failure pattern recognition and resolution.</p>
+                    <div class="file-path">use_cases/self_healing_tests.py</div>
+                </div>
+
+                <div class="use-case-card fade-in">
+                    <div class="use-case-number">7</div>
+                    <h4>🎨 Visual AI Testing</h4>
+                    <p>AI-powered visual regression testing with intelligent screenshot comparison, layout anomaly detection, and comprehensive cross-browser visual validation.</p>
+                    <div class="file-path">use_cases/visual_ai_testing.py</div>
+                </div>
+
+                <div class="use-case-card fade-in">
+                    <div class="use-case-number">8</div>
+                    <h4>🚀 Performance Testing Intelligence</h4>
+                    <p>AI-driven performance test generation with intelligent load pattern creation, performance bottleneck prediction, and resource optimization recommendations.</p>
+                    <div class="file-path">use_cases/performance_testing.py</div>
+                </div>
+
+                <div class="use-case-card fade-in">
+                    <div class="use-case-number">9</div>
+                    <h4>🔒 Security Penetration Testing</h4>
+                    <p>Automated security test generation with vulnerability pattern recognition, OWASP compliance testing, and comprehensive security risk assessment automation.</p>
+                    <div class="file-path">use_cases/security_penetration_testing.py</div>
+                </div>
+
+                <div class="use-case-card fade-in">
+                    <div class="use-case-number">10</div>
+                    <h4>📈 Smart Test Optimizer</h4>
+                    <p>Test suite optimization and redundancy elimination with execution time minimization, resource usage optimization, and flaky test identification and resolution.</p>
+                    <div class="file-path">use_cases/smart_test_optimizer.py</div>
+                </div>
+
+                <div class="use-case-card fade-in">
+                    <div class="use-case-number">11</div>
+                    <h4>🔮 Intelligent Bug Predictor</h4>
+                    <p>Predictive bug analysis using historical data with risk-based testing prioritization, defect pattern recognition, and proactive quality measures.</p>
+                    <div class="file-path">use_cases/intelligent_bug_predictor.py</div>
+                </div>
+
+                <div class="use-case-card fade-in">
+                    <div class="use-case-number">12</div>
+                    <h4>💡 Intelligent Test Data Generation</h4>
+                    <p>Smart test data creation with AI-powered data synthesis, realistic data generation, privacy-compliant test data, and domain-specific data patterns.</p>
+                    <div class="file-path">use_cases/intelligent_test_data_generation.py</div>
+                </div>
+
+                <div class="use-case-card fade-in">
+                    <div class="use-case-number">13</div>
+                    <h4>📊 Database Insights Engine</h4>
+                    <p>Intelligent database testing automation with data quality validation, performance query optimization, and schema change impact analysis.</p>
+                    <div class="file-path">use_cases/database_insights.py</div>
+                </div>
+
+                <div class="use-case-card fade-in">
+                    <div class="use-case-number">14</div>
+                    <h4>🔗 API Test Generation</h4>
+                    <p>Automated API test generation from OpenAPI specs, Postman collections, and API documentation with intelligent test scenario creation and validation.</p>
+                    <div class="file-path">use_cases/api_generation.py</div>
+                </div>
+
+                <div class="use-case-card fade-in">
+                    <div class="use-case-number">15</div>
+                    <h4>📝 Auto Documentation Generator</h4>
+                    <p>Intelligent test documentation generation with automated test case documentation, comprehensive test reports, and living documentation updates.</p>
+                    <div class="file-path">use_cases/auto_documentation.py</div>
+                </div>
+
+                <div class="use-case-card fade-in">
+                    <div class="use-case-number">16</div>
+                    <h4>🏗️ Jenkins Dashboard Integration</h4>
+                    <p>Advanced CI/CD pipeline integration with Jenkins dashboard visualization, build analytics, test execution monitoring, and deployment automation.</p>
+                    <div class="file-path">use_cases/jenkins_dashboard.py</div>
+                </div>
+
+                <div class="use-case-card fade-in">
+                    <div class="use-case-number">17</div>
+                    <h4>👥 Manual Test Analysis</h4>
+                    <p>Intelligent manual test analysis with automation potential identification, test case optimization, and manual-to-automated test conversion recommendations.</p>
+                    <div class="file-path">use_cases/manual_test_analysis.py</div>
+                </div>
+
+                <div class="use-case-card fade-in">
+                    <div class="use-case-number">18</div>
+                    <h4>🔍 Pull Request Reviewer</h4>
+                    <p>Automated code review with intelligent test impact analysis, test coverage assessment, and automated feedback generation for pull requests.</p>
+                    <div class="file-path">use_cases/pull_requests_reviewer.py</div>
+                </div>
+
+                <div class="use-case-card fade-in">
+                    <div class="use-case-number">19</div>
+                    <h4>🚔 RoboCop Lint Checker</h4>
+                    <p>Advanced Robot Framework code quality analysis with intelligent linting, best practice recommendations, and automated code improvement suggestions.</p>
+                    <div class="file-path">use_cases/robocop_lint_checker.py</div>
+                </div>
+
+                <div class="use-case-card fade-in">
+                    <div class="use-case-number">20</div>
+                    <h4>🧭 Smart CX Navigator</h4>
+                    <p>Customer experience testing automation with user journey optimization, conversion funnel analysis, and intelligent UX/UI testing recommendations.</p>
+                    <div class="file-path">use_cases/smart_cx_navigator.py</div>
+                </div>
+
+                <div class="use-case-card fade-in">
+                    <div class="use-case-number">21</div>
+                    <h4>🚩 Feature Flag Testing (FOS Checks)</h4>
+                    <p>Advanced feature flag testing with intelligent flag configuration validation, A/B testing automation, and feature rollout testing strategies.</p>
+                    <div class="file-path">use_cases/fos_checks.py</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Brand Section -->
+    <section class="section" id="brands">
+        <div class="container">
+            <div class="section-header fade-in">
+                <h2>🎨 Brand-Specific Intelligence</h2>
+                <p>Specialized testing intelligence tailored for 6+ web hosting and domain brands with deep understanding of industry-specific workflows and requirements.</p>
+            </div>
+
+            <div class="brand-grid">
+                <div class="brand-card fade-in">
+                    <div class="brand-icon">🌐</div>
+                    <h4>Bluehost</h4>
+                    <ul class="brand-features">
+                        <li>WordPress hosting optimization</li>
+                        <li>cPanel integration testing</li>
+                        <li>SSL certificate management</li>
+                        <li>Shared hosting performance validation</li>
+                        <li>Control panel automation</li>
+                    </ul>
+                </div>
+
+                <div class="brand-card fade-in">
+                    <div class="brand-icon">🦎</div>
+                    <h4>HostGator</h4>
+                    <ul class="brand-features">
+                        <li>Shared hosting resource management</li>
+                        <li>Website builder integration</li>
+                        <li>Reseller feature testing</li>
+                        <li>Scalability validation</li>
+                        <li>Migration process automation</li>
+                    </ul>
+                </div>
+
+                <div class="brand-card fade-in">
+                    <div class="brand-icon">🌍</div>
+                    <h4>Domain.com</h4>
+                    <ul class="brand-features">
+                        <li>Domain registration workflows</li>
+                        <li>DNS management testing</li>
+                        <li>WHOIS privacy validation</li>
+                        <li>Domain transfer automation</li>
+                        <li>Bulk domain operations</li>
+                    </ul>
+                </div>
+
+                <div class="brand-card fade-in">
+                    <div class="brand-icon">🏢</div>
+                    <h4>Network Solutions</h4>
+                    <ul class="brand-features">
+                        <li>Enterprise domain services</li>
+                        <li>Email hosting integration</li>
+                        <li>Marketing tools validation</li>
+                        <li>Business feature testing</li>
+                        <li>Advanced service workflows</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Directory Structure Section -->
+    <section class="section">
+        <div class="container">
+            <div class="section-header fade-in">
+                <h2>📁 Complete Project Structure</h2>
+                <p>A comprehensive view of The Vortex ecosystem architecture with detailed breakdown of all components, modules, and specialized applications.</p>
+            </div>
+
+            <div class="code-block fade-in">
+jarvis-test-automation/                    # Main Project Repository
+├── 🌀 THE_VORTEX_KNOWLEDGEBASE.md        # Complete Documentation Hub
+├── 🎨 the_vortex_showcase.html           # Interactive Project Showcase
+├── 📖 ENHANCED_TEST_GENERATOR_README.md  # Enhanced AI Generator Guide
+├── 📋 gen_ai_documentation.md            # AI Integration Documentation
+├── 📄 requirements.txt                   # Python Dependencies
+├── ⚙️ browserstack.yml                   # BrowserStack Configuration
+├── 🔧 qodana.yaml                        # Code Quality Configuration
+│
+├── 📊 reports/                           # Test Execution Reports
+├── 📸 screenshots/                       # Visual Testing Assets
+├── 🚨 alerts/                           # Alert Configurations
+├── 📈 performance_reports/               # Performance Testing Results
+├── ♿ accessibility/                     # Accessibility Test Results
+├── 🔒 accessibility_screenshots/        # Accessibility Visual Evidence
+├── 📚 historical_data/                   # Test History & Analytics
+├── 🧪 generated_tests/                   # AI-Generated Test Artifacts
+├── 🔄 rag_cache/                        # RAG System Cache
+├── 📝 logs/                             # System & Execution Logs
+├── 🎧 listeners/                        # Event Listeners & Notifications
+├── 📊 observability_grafana/            # Monitoring & Metrics
+├── ☁️ openshift/                        # Cloud Deployment Configs
+└── 🧪 tests/                            # Core Test Suites
+
+scripts/gen_ai/                           # 🌀 THE VORTEX CORE SYSTEM
+├── 🎮 main_ui.py                        # Streamlit Portal Interface
+├── 🔌 azure_openai_client.py            # Azure OpenAI Integration
+├── 🚀 newfold_ai_client.py              # Legacy AI Client Support
+├── 🔧 streamlit_fix.py                  # Environment Optimization
+├── 🧪 quick_azure_test.py               # Azure Integration Validation
+├── 📝 notifications.json                # Notification Management
+├── 📈 usage_history.json                # AI Usage Analytics
+├── 💬 user_feedback.json                # User Experience Tracking
+│
+├── 📋 configs/                          # Configuration Management
+│   ├── enhanced_test_generator_config.yaml # Test Generation Parameters
+│   └── jenkins_config.json              # CI/CD Integration Settings
+│
+├── 🤖 generator/                        # Test Generation Engine
+│   ├── testcase_generator.py            # Core Generation Logic
+│   └── smart_testcase_generator.py      # Enhanced AI Generation
+│
+├── 🧠 nlp/                             # Natural Language Processing
+│   └── requirement_analyzer.py          # Requirement Intelligence
+│
+├── 📖 parsers/                         # Multi-Format Document Processing
+│   ├── base_parser.py                   # Abstract Parser Interface
+│   ├── enhanced_parser.py               # Advanced Multi-Source Parser
+│   ├── text_parser.py                   # Plain Text Processing
+│   ├── markdown_parser.py               # Markdown Document Handler
+│   ├── pdf_parser.py                    # PDF Document Extraction
+│   ├── word_parser.py                   # Microsoft Word Processing
+│   ├── image_parser.py                  # Visual Content Analysis (OCR)
+│   └── postman_parser.py                # API Collection Processing
+│
+├── 🔍 rag/                             # Retrieval-Augmented Generation
+│   ├── rag_service.py                   # Core RAG Implementation
+│   ├── smart_rag_service.py             # Enhanced Context-Aware RAG
+│   ├── rag_handler.py                   # RAG Request Management
+│   ├── rag_config.py                    # RAG Configuration Engine
+│   ├── dom_snapshot_service.py          # Web DOM Intelligence
+│   ├── faiss_warnings_filter.py         # Vector DB Optimization
+│   └── torch_stub/                      # PyTorch Integration Layer
+│
+├── 🦾 robot_writer/                    # Robot Framework Integration
+│   ├── robot_writer.py                  # Basic Robot Script Generation
+│   └── smart_robot_writer.py            # Self-Healing Test Scripts
+│
+├── 🎯 use_cases/                       # 22+ Specialized AI Applications
+│   ├── dynamic_tc_generation.py         # 🎯 Dynamic Test Generation
+│   ├── ai_cross_platform_orchestrator.py # 🤖 Cross-Platform Orchestration
+│   ├── ai_quality_assurance_guardian.py  # 🛡️ Quality Gate Management
+│   ├── ai_test_environment_manager.py    # 🌐 Environment Management
+│   ├── ai_test_execution_orchestrator.py # 🎮 Execution Orchestration
+│   ├── self_healing_tests.py             # 🔄 Self-Healing Logic
+│   ├── visual_ai_testing.py              # 🎨 Visual Regression Testing
+│   ├── performance_testing.py            # 🚀 Performance Intelligence
+│   ├── security_penetration_testing.py   # 🔒 Security Testing
+│   ├── smart_test_optimizer.py           # 📈 Test Optimization
+│   ├── intelligent_bug_predictor.py      # 🔮 Bug Prediction
+│   ├── intelligent_test_data_generation.py # 💡 Smart Test Data
+│   ├── database_insights.py              # 📊 Database Intelligence
+│   ├── api_generation.py                 # 🔗 API Test Generation
+│   ├── auto_documentation.py             # 📝 Auto Documentation
+│   ├── jenkins_dashboard.py              # 🏗️ CI/CD Integration
+│   ├── manual_test_analysis.py           # 👥 Manual Test Analysis
+│   ├── pull_requests_reviewer.py         # 🔍 Code Review Automation
+│   ├── robocop_lint_checker.py           # 🚔 Robot Framework Linting
+│   ├── smart_cx_navigator.py             # 🧭 Customer Experience
+���   ├── fos_checks.py                     # 🚩 Feature Flag Testing
+│   └── __init__.py                       # Module Initialization
+│
+└── 🔄 workflow/                        # Agentic AI Orchestration
+    ├── agentic_workflow.py               # Intelligent Workflow Engine
+    └── agentic_workflow_visualization.html # Workflow Visualization UI
+
+Additional Components:
+├── 🐍 venv_metrics/                     # Virtual Environment for Metrics
+├── 🐍 venv1/                           # Alternative Virtual Environment
+├── 🗄️ __pycache__/                     # Python Bytecode Cache
+├── 📊 media_elements_report.html        # Media Analysis Reports
+├── 📈 media_elements_review.xlsx        # Media Review Spreadsheets
+├���─ 🤖 bstack.py                        # BrowserStack Integration
+����── 🛒 check_order_batch.py             # Order Processing Automation
+├── 📝 command_generator.html            # Command Generation Interface
+├── 🗑️ delete_products.py               # Product Management Utilities
+├── 📦 get_next_platform_orders.py       # Order Management System
+└── 🕷️ web_crawler.log                  # Web Crawling Activity Logs
+            </div>
+        </div>
+    </section>
+
+    <!-- Enhanced Features Section -->
+    <section class="section">
+        <div class="container">
+            <div class="section-header fade-in">
+                <h2>🔧 Advanced Configuration & Capabilities</h2>
+                <p>Comprehensive configuration options and advanced capabilities that make The Vortex the most flexible and powerful AI testing platform.</p>
+            </div>
+
+            <div class="feature-grid">
+                <div class="feature-card fade-in">
+                    <div class="feature-icon">⚙️</div>
+                    <h3>Test Complexity Levels</h3>
+                    <p>Four distinct complexity levels: Basic for simple workflows, Intermediate for moderate complexity, Advanced for complex scenarios, and Comprehensive for enterprise-grade testing requirements.</p>
+                </div>
+
+                <div class="feature-card fade-in">
+                    <div class="feature-icon">🧠</div>
+                    <h3>Multiple AI Models</h3>
+                    <p>Support for cutting-edge AI models including GPT-4, GPT-3.5-turbo, Claude-3, and Gemini-Pro with intelligent model selection based on task complexity and requirements.</p>
+                </div>
+
+                <div class="feature-card fade-in">
+                    <div class="feature-icon">📄</div>
+                    <h3>Enhanced Document Formats</h3>
+                    <p>Support for 10+ file formats including traditional documents (TXT, MD, DOCX, PDF), spreadsheets (XLSX, XLS, CSV), structured data (JSON, YAML, XML), web content (HTML, RTF), and API integrations.</p>
+                </div>
+
+                <div class="feature-card fade-in">
+                    <div class="feature-icon">🔗</div>
+                    <h3>API Integrations</h3>
+                    <p>Direct integration with design tools (Figma API), documentation platforms (Confluence API), and web scraping capabilities to extract requirements from any web page or application.</p>
+                </div>
+
+                <div class="feature-card fade-in">
+                    <div class="feature-icon">📏</div>
+                    <h3>Large File Support</h3>
+                    <p>Handle massive files up to 200MB per file, enabling comprehensive analysis of large specifications, detailed documentation, and extensive test data sets.</p>
+                </div>
+
+                <div class="feature-card fade-in">
+                    <div class="feature-icon">🎨</div>
+                    <h3>Modern UI/UX</h3>
+                    <p>Streamlit-powered modern interface with Newfold Digital branding, Inter and JetBrains Mono fonts, responsive design, and intuitive user experience optimized for productivity.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-logo">🌀 The Vortex</div>
+                <p class="footer-text">
+                    Virtual Orchestrator of Responsive Technical Experiences and eXecution -
+                    Transforming the future of AI-powered test automation, one intelligent workflow at a time.
+                </p>
+                <div class="footer-links">
+                    <a href="#overview">Overview</a>
+                    <a href="#features">Features</a>
+                    <a href="#architecture">Architecture</a>
+                    <a href="#use-cases">Use Cases</a>
+                    <a href="#brands">Brands</a>
+                </div>
+                <div class="footer-bottom">
+                    <p>&copy; 2025 The Vortex - AI-Powered Test Automation Ecosystem. Built with ❤️ and cutting-edge AI technology.</p>
+                </div>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        // Smooth scrolling for navigation links
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function (e) {
+                e.preventDefault();
+                const target = document.querySelector(this.getAttribute('href'));
+                if (target) {
+                    target.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'start'
+                    });
+                }
+            });
+        });
+
+        // Intersection Observer for fade-in animations
+        const observerOptions = {
+            threshold: 0.1,
+            rootMargin: '0px 0px -50px 0px'
+        };
+
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    entry.target.classList.add('visible');
+                }
+            });
+        }, observerOptions);
+
+        // Observe all fade-in elements
+        document.querySelectorAll('.fade-in').forEach(el => {
+            observer.observe(el);
+        });
+
+        // Navbar scroll effect
+        window.addEventListener('scroll', () => {
+            const navbar = document.querySelector('.navbar');
+            if (window.scrollY > 100) {
+                navbar.style.background = 'rgba(15, 23, 42, 0.98)';
+            } else {
+                navbar.style.background = 'rgba(15, 23, 42, 0.95)';
+            }
+        });
+
+        // Add some interactive hover effects
+        document.querySelectorAll('.feature-card, .use-case-card, .brand-card').forEach(card => {
+            card.addEventListener('mouseenter', function() {
+                this.style.transform = 'translateY(-8px) scale(1.02)';
+            });
+
+            card.addEventListener('mouseleave', function() {
+                this.style.transform = 'translateY(0) scale(1)';
+            });
+        });
+
+        // Dynamic stats counter animation
+        function animateStats() {
+            const statNumbers = document.querySelectorAll('.stat-item h3');
+            statNumbers.forEach(stat => {
+                const finalNumber = stat.textContent;
+                let currentNumber = 0;
+                const increment = finalNumber.includes('+') ? 1 : 5;
+                const target = parseInt(finalNumber.replace(/\D/g, ''));
+
+                const timer = setInterval(() => {
+                    if (currentNumber < target) {
+                        currentNumber += increment;
+                        stat.textContent = finalNumber.includes('+') ? currentNumber + '+' : currentNumber + '%';
+                    } else {
+                        stat.textContent = finalNumber;
+                        clearInterval(timer);
+                    }
+                }, 50);
+            });
+        }
+
+        // Trigger stats animation when stats section is visible
+        const statsSection = document.querySelector('.stats');
+        if (statsSection) {
+            const statsObserver = new IntersectionObserver((entries) => {
+                entries.forEach(entry => {
+                    if (entry.isIntersecting) {
+                        animateStats();
+                        statsObserver.unobserve(entry.target);
+                    }
+                });
+            }, { threshold: 0.5 });
+
+            statsObserver.observe(statsSection);
+        }
+    </script>
+</body>
+</html>

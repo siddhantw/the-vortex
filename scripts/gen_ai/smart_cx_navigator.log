@@ -1,0 +1,63 @@
+2025-08-07 19:12:33,163 - SmartCXNavigator - WARNING - Failed to initialize Azure OpenAI client: Azure OpenAI endpoint and API key must be provided
+2025-08-07 19:12:33,167 - SmartCXNavigator - INFO - Starting crawl of 1 URLs with max depth 1
+2025-08-07 19:12:33,167 - SmartCXNavigator - WARNING - Playwright not available, falling back to other methods
+2025-08-07 19:12:46,934 - SmartCXNavigator - INFO - Selenium WebDriver initialized successfully
+2025-08-07 19:12:46,936 - SmartCXNavigator - INFO - Crawling [0]: https://httpbin.org/html
+2025-08-07 19:12:49,263 - SmartCXNavigator - WARNING - aiohttp failed for https://httpbin.org/html: Cannot connect to host httpbin.org:443 ssl:True [SSLCertVerificationError: (1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1020)')]
+2025-08-07 19:12:49,263 - SmartCXNavigator - WARNING - No content received for https://httpbin.org/html
+2025-08-07 19:12:49,383 - SmartCXNavigator - INFO - Generating AI-powered customer experience insights...
+2025-08-07 19:12:49,383 - SmartCXNavigator - ERROR - Error in comprehensive CX analysis: 'AICustomerExperienceAnalyzer' object has no attribute '_categorize_issues'
+2025-08-07 19:12:49,383 - SmartCXNavigator - INFO - AI analysis completed with CX score: 0.0/100
+2025-08-07 19:12:49,384 - SmartCXNavigator - INFO - Starting crawl of 1 URLs with max depth 1
+2025-08-07 19:12:49,384 - SmartCXNavigator - WARNING - Playwright not available, falling back to other methods
+2025-08-07 19:12:51,569 - SmartCXNavigator - INFO - Selenium WebDriver initialized successfully
+2025-08-07 19:12:51,574 - SmartCXNavigator - INFO - Crawling [0]: https://example.com
+2025-08-07 19:13:22,226 - SmartCXNavigator - WARNING - aiohttp failed for https://example.com: 
+2025-08-07 19:13:22,230 - SmartCXNavigator - WARNING - No content received for https://example.com
+2025-08-07 19:13:22,351 - SmartCXNavigator - INFO - Generating AI-powered customer experience insights...
+2025-08-07 19:13:22,351 - SmartCXNavigator - ERROR - Error in comprehensive CX analysis: 'AICustomerExperienceAnalyzer' object has no attribute '_categorize_issues'
+2025-08-07 19:13:22,351 - SmartCXNavigator - INFO - AI analysis completed with CX score: 0.0/100
+2025-08-07 19:13:22,352 - SmartCXNavigator - INFO - Starting crawl of 1 URLs with max depth 1
+2025-08-07 19:13:22,352 - SmartCXNavigator - WARNING - Playwright not available, falling back to other methods
+2025-08-07 19:13:24,648 - SmartCXNavigator - INFO - Selenium WebDriver initialized successfully
+2025-08-07 19:13:24,648 - SmartCXNavigator - INFO - Crawling [0]: https://httpbin.org/html
+2025-08-07 19:13:26,930 - SmartCXNavigator - WARNING - aiohttp failed for https://httpbin.org/html: Cannot connect to host httpbin.org:443 ssl:True [SSLCertVerificationError: (1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1020)')]
+2025-08-07 19:13:26,930 - SmartCXNavigator - WARNING - No content received for https://httpbin.org/html
+2025-08-07 19:13:27,043 - SmartCXNavigator - INFO - Generating AI-powered customer experience insights...
+2025-08-07 19:13:27,044 - SmartCXNavigator - ERROR - Error in comprehensive CX analysis: 'AICustomerExperienceAnalyzer' object has no attribute '_categorize_issues'
+2025-08-07 19:13:27,044 - SmartCXNavigator - INFO - AI analysis completed with CX score: 0.0/100
+2025-08-07 19:16:11,354 - SmartCXNavigator - WARNING - Failed to initialize Azure OpenAI client: Azure OpenAI endpoint and API key must be provided
+2025-08-07 19:16:11,355 - SmartCXNavigator - INFO - Starting crawl of 1 URLs with max depth 1
+2025-08-07 19:16:11,355 - SmartCXNavigator - WARNING - Playwright not available, falling back to other methods
+2025-08-07 19:16:13,719 - SmartCXNavigator - INFO - Selenium WebDriver initialized successfully
+2025-08-07 19:16:13,720 - SmartCXNavigator - INFO - Crawling [0]: https://httpbin.org/html
+2025-08-07 19:16:14,905 - SmartCXNavigator - INFO - Generating AI-powered customer experience insights...
+2025-08-07 19:16:14,905 - SmartCXNavigator - INFO - AI analysis completed with CX score: 55.0/100
+2025-08-07 19:16:14,905 - SmartCXNavigator - INFO - Starting crawl of 1 URLs with max depth 1
+2025-08-07 19:16:14,906 - SmartCXNavigator - WARNING - Playwright not available, falling back to other methods
+2025-08-07 19:16:16,636 - SmartCXNavigator - INFO - Selenium WebDriver initialized successfully
+2025-08-07 19:16:16,636 - SmartCXNavigator - INFO - Crawling [0]: https://example.com
+2025-08-07 19:16:19,159 - SmartCXNavigator - INFO - Generating AI-powered customer experience insights...
+2025-08-07 19:16:19,159 - SmartCXNavigator - INFO - AI analysis completed with CX score: 65.0/100
+2025-08-07 19:16:19,160 - SmartCXNavigator - INFO - Starting crawl of 1 URLs with max depth 1
+2025-08-07 19:16:19,160 - SmartCXNavigator - WARNING - Playwright not available, falling back to other methods
+2025-08-07 19:16:20,427 - SmartCXNavigator - INFO - Selenium WebDriver initialized successfully
+2025-08-07 19:16:20,427 - SmartCXNavigator - INFO - Crawling [0]: https://httpbin.org/html
+2025-08-07 19:16:22,244 - SmartCXNavigator - INFO - Generating AI-powered customer experience insights...
+2025-08-07 19:16:22,244 - SmartCXNavigator - INFO - AI analysis completed with CX score: 55.0/100
+2025-08-07 19:19:38,352 - SmartCXNavigator - WARNING - Failed to initialize Azure OpenAI client: Azure OpenAI endpoint and API key must be provided
+2025-08-07 19:19:38,353 - SmartCXNavigator - INFO - Starting crawl of 1 URLs with max depth 1
+2025-08-07 19:19:38,353 - SmartCXNavigator - WARNING - Playwright not available, falling back to other methods
+2025-08-07 19:19:40,958 - SmartCXNavigator - INFO - Selenium WebDriver initialized successfully
+2025-08-07 19:19:40,959 - SmartCXNavigator - INFO - Crawling [0]: https://httpbin.org/html
+2025-08-07 19:19:42,148 - SmartCXNavigator - INFO - Generating AI-powered customer experience insights...
+2025-08-07 19:19:42,149 - SmartCXNavigator - INFO - AI analysis completed with CX score: 55.0/100
+2025-08-07 19:21:35,039 - SmartCXNavigator - WARNING - Failed to initialize Azure OpenAI client: Azure OpenAI endpoint and API key must be provided
+2025-08-07 19:21:35,040 - SmartCXNavigator - INFO - Starting crawl of 2 URLs with max depth 1
+2025-08-07 19:21:35,040 - SmartCXNavigator - WARNING - Playwright not available, falling back to other methods
+2025-08-07 19:21:37,726 - SmartCXNavigator - INFO - Selenium WebDriver initialized successfully
+2025-08-07 19:21:37,726 - SmartCXNavigator - INFO - Crawling [0]: https://www.google.com
+2025-08-07 19:21:49,828 - SmartCXNavigator - INFO - Crawling [1]: https://www.google.com/imghp
+2025-08-07 19:21:56,233 - SmartCXNavigator - INFO - Crawling [1]: https://www.google.com/finance
+2025-08-07 19:21:59,387 - SmartCXNavigator - INFO - Generating AI-powered customer experience insights...
+2025-08-07 19:21:59,388 - SmartCXNavigator - INFO - AI analysis completed with CX score: 12.0/100

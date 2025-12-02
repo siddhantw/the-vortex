@@ -1,0 +1,338 @@
+# Example Configuration for Enhanced Test Generator
+
+# Basic configuration for test generation
+test_config:
+  # Brand context for specialized intelligence
+  brand_context: "bluehost"  # Options: bluehost, domain.com, hostgator, network_solutions, register.com, auto-detect
+  
+  # Test scope and type
+  scope: "Both"  # Options: Functional, Non-Functional, Both
+  test_type: "All"  # Options: Component, Integration, Acceptance, All
+  test_level: "All"  # Options: Unit, Integration, System, Acceptance, All
+
+  # Test generation preferences
+  test_generation_preferences:
+    - "Functional Tests"
+    - "Non-Functional Tests"
+    - "Regression Tests"
+    - "Smoke Tests"
+
+  # Test complexity and quality
+  test_complexity: "Comprehensive"  # Options: Basic, Intermediate, Advanced, Comprehensive
+  max_test_cases: 50
+  
+  # Target components (optional)
+  components:
+    - authentication
+    - payment_processing
+    - user_management
+    - content_management
+    - performance_monitoring
+    - security_features
+    - api_endpoints
+    - database_interactions
+    - ui_elements
+    - accessibility_features
+    - error_handling
+    - integration_points
+    - third_party_services
+  
+  # Test type preferences
+  include_negative_tests: true
+  include_accessibility: false
+  include_performance: false
+  include_security: true
+  
+  # Automation preferences
+  automation_preference: "Balanced"  # Options: Balanced, Prefer Manual, Prefer Automated, API-First
+  
+  # AI model selection
+  ai_model: "gpt-4"  # Options: gpt-4, gpt-3.5-turbo, claude-3, gemini-pro
+
+# RAG (Retrieval-Augmented Generation) configuration
+rag_config:
+  enabled: true
+  
+  # Knowledge source configuration
+  knowledge_source: "Brand Help Pages"  # Options: Local Directory, Brand Help Pages, Database, Custom URL, Confluence, GitHub Repository
+  
+  # Model settings
+  embedding_model: "text-embedding-3-small"  # Updated for Newfold AI compatibility
+  chunk_size: 800
+  similarity_threshold: 0.7
+  max_context_length: 4000
+  
+  # Advanced settings
+  enable_reranking: true
+  use_hybrid_search: true
+  cache_embeddings: true
+  auto_update_index: false
+
+# API Keys (set as environment variables for security)
+api_keys:
+  # Newfold AI authentication (use either UJWT token or private key)
+  newfold_ujwt_token: "${NEWFOLD_UJWT_TOKEN}"
+  newfold_private_key: "${NEWFOLD_PRIVATE_KEY}"
+  figma_access_token: "${FIGMA_ACCESS_TOKEN}"
+  confluence_api_token: "${CONFLUENCE_API_TOKEN}"
+  github_token: "${GITHUB_TOKEN}"
+
+# File processing settings
+file_processing:
+  max_file_size_mb: 200
+  supported_formats:
+    - txt
+    - md
+    - docx
+    - pdf
+    - xlsx
+    - xls
+    - csv
+    - json
+    - yaml
+    - yml
+    - html
+    - xml
+    - rtf
+  
+  # Figma integration
+  figma:
+    base_url: "https://api.figma.com/v1"
+    timeout: 30
+  
+  # Confluence integration
+  confluence:
+    timeout: 30
+  
+  # Web scraping settings
+  web_scraping:
+    timeout: 30
+    user_agent: "Mozilla/5.0 (compatible; TestGenerator/1.0)"
+
+# Output settings
+output:
+  # Test plan generation
+  test_plan:
+    format: "docx"
+    include_timeline: true
+    include_risk_assessment: true
+    include_effort_estimation: true
+  
+  # Test case generation
+  test_cases:
+    export_formats:
+      - csv
+      - json
+      - excel
+    include_test_data: true
+    include_prerequisites: true
+  
+  # Robot Framework settings
+  robot_framework:
+    library_imports:
+      - SeleniumLibrary
+      - Collections
+      - String
+      - OperatingSystem
+      - DateTime
+    
+    # Self-healing test settings
+    self_healing:
+      enabled: true
+      max_healing_attempts: 3
+      selector_timeout: 5
+    
+    # Test data settings
+    data_driven:
+      enabled: true
+      default_format: "csv"
+      generate_sample_data: true
+
+# Agentic workflow settings
+agentic_workflow:
+  enabled: true
+  
+  # Agent configuration
+  agents:
+    analyzer:
+      model: "gpt-4"
+      temperature: 0.3
+      max_tokens: 2000
+    
+    planner:
+      model: "gpt-4"
+      temperature: 0.2
+      max_tokens: 3000
+    
+    generator:
+      model: "gpt-4"
+      temperature: 0.4
+      max_tokens: 4000
+  
+  # Workflow settings
+  parallel_execution: false
+  timeout_per_agent: 300  # seconds
+  retry_attempts: 2
+
+# Performance and optimization
+performance:
+  caching:
+    enabled: true
+    cache_duration: 3600  # seconds
+    max_cache_size: 1000  # MB
+  
+  processing:
+    max_concurrent_files: 5
+    chunk_processing: true
+    background_processing: true
+  
+  memory:
+    max_memory_usage: 2048  # MB
+    cleanup_interval: 300  # seconds
+
+# Brand-specific configurations
+brand_configurations:
+  bluehost:
+    focus_areas:
+      - wordpress_hosting
+      - cpanel_management
+      - ssl_certificates
+      - email_hosting
+      - customer_support
+      - performance_monitoring
+      - uptime_monitoring
+      - security_features
+      - wordpress_integration
+      - website_builder
+      - reseller_hosting
+      - migration_tools
+      - domain_search
+      - domain_registration
+      - domain_transfer
+      - dns_management
+      - website_security
+      - website_performance
+      - website_analytics
+      - website_backup
+    
+    test_priorities:
+      - hosting_performance
+      - uptime_monitoring
+      - wordpress_integration
+      - security_features
+      - domain_search
+      - dns_management
+      - website_backup
+  
+  "domain.com":
+    focus_areas:
+      - domain_search
+      - domain_registration
+      - domain_transfer
+      - dns_management
+      - domain_privacy
+      - domain_renewal
+    
+    test_priorities:
+      - domain_availability
+      - registration_process
+      - dns_configuration
+      - whois_privacy
+      - domain_transfer_process
+      - domain_renewal_process
+  
+  hostgator:
+    focus_areas:
+      - shared_hosting
+      - website_builder
+      - reseller_hosting
+      - migration_tools
+    
+    test_priorities:
+      - hosting_features
+      - website_creation
+      - migration_process
+      - customer_support
+
+  network_solutions:
+    focus_areas:
+      - domain_registration
+      - web_hosting
+      - website_builder
+      - email_hosting
+      - security_features
+      - ssl_certificates
+      - website_backup
+      - performance_monitoring
+      - customer_support
+      - dns_management
+      - domain_transfer
+      - domain_privacy
+      - domain_renewal
+
+    test_priorities:
+        - domain_availability
+        - registration_process
+        - dns_configuration
+        - whois_privacy
+        - hosting_features
+        - website_creation
+        - security_features
+        - customer_support
+        - website_backup
+
+  register_com:
+    focus_areas:
+      - domain_registration
+      - web_hosting
+      - website_builder
+      - email_hosting
+      - security_features
+      - ssl_certificates
+      - website_backup
+      - performance_monitoring
+      - customer_support
+      - dns_management
+      - domain_transfer
+      - domain_privacy
+      - domain_renewal
+
+    test_priorities:
+        - domain_availability
+        - registration_process
+        - dns_configuration
+        - whois_privacy
+        - hosting_features
+        - website_creation
+        - security_features
+        - customer_support
+        - website_backup
+
+# Auto-detect configuration
+auto_detect:
+  enabled: true
+  detection_methods:
+    - "Brand Name Recognition"
+    - "Service Type Analysis"
+    - "Feature Set Comparison"
+
+  fallback_brand: "bluehost"  # Default brand if auto-detection fails
+  detection_threshold: 0.8  # Confidence threshold for auto-detection
+
+# Logging and Monitoring
+logging:
+  enabled: true
+  log_level: "INFO"  # Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  log_file: "test_generator.log"
+
+  # Monitoring settings
+  monitoring:
+    enabled: true
+    metrics:
+      - "Test Generation Time"
+      - "Test Case Coverage"
+      - "Error Rates"
+      - "Performance Metrics"
+    alert_thresholds:
+      error_rate: 0.05  # 5% error rate threshold for alerts
+      performance_degradation: 0.1  # 10% performance degradation threshold for alerts
