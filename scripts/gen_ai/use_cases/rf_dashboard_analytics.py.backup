@@ -1,0 +1,2125 @@
+"""
+Robot Framework Dashboard Analytics Module
+Integrates with robotframework-dashboard to provide AI-powered insights
+on test results across multiple Jenkins runs using Azure OpenAI.
+"""
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import requests
+from requests.auth import HTTPBasicAuth
+import json
+import os
+import sys
+from datetime import datetime, timedelta
+from typing import Dict, List, Any, Optional, Tuple
+import logging
+import xml.etree.ElementTree as ET
+from collections import defaultdict
+import base64
+import io
+from urllib.parse import quote
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Ensure parent directory is in path to import shared modules
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if parent_dir not in sys.path:
+    sys.path.append(parent_dir)
+
+# Import Azure OpenAI Client
+try:
+    from azure_openai_client import AzureOpenAIClient
+    AZURE_AVAILABLE = True
+    logger.info("Azure OpenAI client imported successfully")
+except ImportError as e:
+    AZURE_AVAILABLE = False
+    logger.warning(f"Azure OpenAI client not available: {e}")
+
+# Import notifications module
+try:
+    import notifications
+    NOTIFICATIONS_AVAILABLE = True
+except ImportError:
+    NOTIFICATIONS_AVAILABLE = False
+    logger.warning("Notifications module not available")
+
+
+class RobotFrameworkDashboardClient:
+    """Client to interact with Robot Framework Dashboard and Jenkins"""
+
+    def __init__(self, jenkins_url: str, username: str, api_token: str):
+        """
+        Initialize the RF Dashboard client
+
+        Args:
+            jenkins_url: Jenkins server URL
+            username: Jenkins username
+            api_token: Jenkins API token
+        """
+        self.jenkins_url = jenkins_url.rstrip('/')
+        self.username = username
+        self.api_token = api_token
+        self.session = requests.Session()
+        self.session.auth = HTTPBasicAuth(username, api_token)
+        self.session.verify = False  # For self-signed certificates
+        # Disable SSL warnings
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    def get_jobs(self, folder_path: str = "") -> List[Dict[str, Any]]:
+        """Get all Jenkins jobs, including jobs inside folders
+
+        Args:
+            folder_path: Path to folder (e.g., 'job/FolderName') for recursive fetching
+        """
+        # Build URL - either root or specific folder
+        if folder_path:
+            url = f"{self.jenkins_url}/{folder_path}/api/json"
+        else:
+            url = f"{self.jenkins_url}/api/json"
+
+        try:
+            params = {'tree': 'jobs[name,url,color,lastBuild[number],_class]'}
+
+            logger.info(f"Fetching jobs from: {url}")
+            response = self.session.get(url, params=params, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+            items = data.get('jobs', [])
+
+            all_jobs = []
+            folders_found = []
+
+            for item in items:
+                item_class = item.get('_class', '')
+                item_name = item.get('name', 'Unknown')
+
+                # Check if this is a folder
+                if 'folder' in item_class.lower() or 'Folder' in item_class:
+                    folders_found.append(item_name)
+                    # Recursively get jobs from this folder
+                    folder_url_path = f"job/{quote(item_name, safe='')}" if not folder_path else f"{folder_path}/job/{quote(item_name, safe='')}"
+                    logger.info(f"Found folder: {item_name}, fetching jobs from it...")
+                    folder_jobs = self.get_jobs(folder_url_path)
+                    # Add folder prefix to job names for clarity
+                    for job in folder_jobs:
+                        job['folder'] = f"{folder_path}/job/{item_name}" if folder_path else f"job/{item_name}"
+                        job['display_name'] = f"{item_name}/{job.get('display_name', job['name'])}"
+                    all_jobs.extend(folder_jobs)
+                else:
+                    # This is a regular job
+                    item['folder'] = folder_path
+                    item['display_name'] = item_name
+                    all_jobs.append(item)
+
+            if not folder_path:
+                logger.info(f"Successfully fetched {len(all_jobs)} jobs from Jenkins (including {len(folders_found)} folders)")
+                if folders_found:
+                    logger.info(f"Folders found: {folders_found}")
+                # Log first few job names for debugging
+                if all_jobs:
+                    sample_jobs = [j.get('display_name', j.get('name', 'Unknown')) for j in all_jobs[:5]]
+                    logger.info(f"Sample jobs: {sample_jobs}")
+
+            return all_jobs
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Request error fetching jobs from {url}: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                logger.error(f"Response status: {e.response.status_code}")
+                logger.error(f"Response text: {e.response.text[:500]}")
+            return []
+        except Exception as e:
+            logger.error(f"Unexpected error fetching jobs from {url}: {type(e).__name__}: {e}")
+            return []
+
+    def get_job_builds(self, job_info: Dict[str, Any], max_builds: int = 50) -> List[Dict[str, Any]]:
+        """Get builds for a specific job
+
+        Args:
+            job_info: Job dictionary containing 'name', 'folder', and 'display_name'
+            max_builds: Maximum number of builds to fetch
+        """
+        job_name = job_info.get('name')
+        folder_path = job_info.get('folder', '')
+        display_name = job_info.get('display_name', job_name)
+
+        # Build the full job path
+        if folder_path:
+            # folder_path already includes 'job/' prefixes
+            url = f"{self.jenkins_url}/{folder_path}/job/{quote(job_name, safe='')}/api/json"
+        else:
+            url = f"{self.jenkins_url}/job/{quote(job_name, safe='')}/api/json"
+
+        try:
+            params = {
+                'tree': f'builds[number,result,timestamp,duration,url]{{0,{max_builds}}}'
+            }
+
+            logger.info(f"Fetching builds for job '{display_name}' from: {url}")
+            response = self.session.get(url, params=params, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+            builds = data.get('builds', [])
+            logger.info(f"Successfully fetched {len(builds)} builds for job: {display_name}")
+
+            if builds:
+                logger.info(f"Build numbers: {[b.get('number') for b in builds[:5]]}")
+
+            return builds
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 404:
+                logger.error(f"Job not found: {display_name}")
+                logger.error(f"Attempted URL: {url}")
+            else:
+                logger.error(f"HTTP {e.response.status_code} error fetching builds for {display_name}: {e}")
+            return []
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Request error fetching builds for {display_name}: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"Unexpected error fetching builds for {display_name}: {type(e).__name__}: {e}")
+            return []
+
+    def get_build_test_results(self, job_info: Dict[str, Any], build_number: int) -> Optional[Dict[str, Any]]:
+        """Get Robot Framework test results for a specific build
+
+        Args:
+            job_info: Job dictionary containing 'name', 'folder', and 'display_name'
+            build_number: Build number
+        """
+        job_name = job_info.get('name')
+        folder_path = job_info.get('folder', '')
+        display_name = job_info.get('display_name', job_name)
+
+        # Build the full job path
+        if folder_path:
+            url = f"{self.jenkins_url}/{folder_path}/job/{quote(job_name, safe='')}/{build_number}/robot/api/json"
+        else:
+            url = f"{self.jenkins_url}/job/{quote(job_name, safe='')}/{build_number}/robot/api/json"
+
+        try:
+            logger.info(f"Fetching RF results from: {url}")
+            response = self.session.get(url, timeout=30)
+            response.raise_for_status()
+
+            data = response.json()
+
+            # Log the structure we received for debugging
+            logger.info(f"RF API Response keys for build #{build_number}: {list(data.keys())}")
+            logger.info(f"RF API Response sample: totalCount={data.get('totalCount', 'N/A')}, passCount={data.get('passCount', 'N/A')}, total={data.get('total', 'N/A')}")
+
+            return data
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 404:
+                logger.warning(f"No Robot Framework results found for {display_name} #{build_number} (404)")
+            else:
+                logger.error(f"HTTP {e.response.status_code} error fetching test results for {display_name} #{build_number}")
+                if e.response.text:
+                    logger.error(f"Response text: {e.response.text[:500]}")
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching test results for {display_name} #{build_number}: {type(e).__name__}: {e}")
+            return None
+
+    def get_build_output_xml(self, job_name: str, build_number: int) -> Optional[str]:
+        """Get Robot Framework output.xml for detailed analysis"""
+        try:
+            url = f"{self.jenkins_url}/job/{job_name}/{build_number}/robot/report/output.xml"
+            response = self.session.get(url)
+            response.raise_for_status()
+            return response.text
+        except Exception as e:
+            logger.error(f"Error fetching output.xml for {job_name} #{build_number}: {e}")
+            return None
+
+
+class RFTestMetrics:
+    """Container for Robot Framework test metrics"""
+
+    def __init__(self):
+        self.total_tests = 0
+        self.passed_tests = 0
+        self.failed_tests = 0
+        self.skipped_tests = 0
+        self.execution_time = 0
+        self.pass_rate = 0.0
+        self.build_number = 0
+        self.timestamp = None
+        self.test_details = []
+        self.suite_details = []
+        self.failed_test_details = []
+        self.keyword_statistics = {}
+        self.tag_statistics = {}
+
+
+class RFDashboardAnalyzer:
+    """Analyzer for Robot Framework Dashboard data with AI insights"""
+
+    def __init__(self, azure_client: Optional[AzureOpenAIClient] = None):
+        """Initialize analyzer with optional Azure OpenAI client"""
+        self.azure_client = azure_client
+        self.metrics_history = []
+
+    def parse_robot_results(self, robot_data: Dict[str, Any], build_info: Dict[str, Any]) -> RFTestMetrics:
+        """Parse Robot Framework test results from Jenkins API"""
+        metrics = RFTestMetrics()
+
+        try:
+            build_num = build_info.get('number', 'unknown')
+
+            # Log the complete structure we received for debugging
+            logger.info(f"=== Parsing Build #{build_num} ===")
+            logger.info(f"Robot data keys: {list(robot_data.keys())}")
+            logger.info(f"Robot data sample: {str(robot_data)[:500]}")
+
+            # Basic statistics - try different field names as Jenkins Robot Plugin versions vary
+            # Try all possible field name combinations
+            metrics.total_tests = (robot_data.get('totalCount') or
+                                 robot_data.get('total') or
+                                 robot_data.get('overallTotal') or 0)
+            metrics.passed_tests = (robot_data.get('passCount') or
+                                  robot_data.get('passed') or
+                                  robot_data.get('overallPassed') or 0)
+            metrics.failed_tests = (robot_data.get('failCount') or
+                                  robot_data.get('failed') or
+                                  robot_data.get('overallFailed') or 0)
+            metrics.skipped_tests = (robot_data.get('skipCount') or
+                                   robot_data.get('skipped') or 0)
+            metrics.execution_time = robot_data.get('duration', 0)
+
+            logger.info(f"Extracted: total={metrics.total_tests}, passed={metrics.passed_tests}, failed={metrics.failed_tests}")
+
+            # Calculate pass rate
+            if metrics.total_tests > 0:
+                metrics.pass_rate = (metrics.passed_tests / metrics.total_tests) * 100
+            else:
+                # If totalCount is 0 but we have passed/failed, recalculate
+                actual_total = metrics.passed_tests + metrics.failed_tests + metrics.skipped_tests
+                if actual_total > 0:
+                    logger.info(f"Recalculating total from components: {actual_total}")
+                    metrics.total_tests = actual_total
+                    metrics.pass_rate = (metrics.passed_tests / metrics.total_tests) * 100
+                else:
+                    # Still 0? Try to count from suites
+                    logger.warning(f"All test counts are 0 for build #{build_num}, will try to extract from suites")
+
+            metrics.build_number = build_info.get('number', 0)
+
+            # Handle timestamp - ensure it's valid
+            timestamp_ms = build_info.get('timestamp', 0)
+            if timestamp_ms > 0:
+                metrics.timestamp = datetime.fromtimestamp(timestamp_ms / 1000)
+            else:
+                metrics.timestamp = datetime.now()
+
+            logger.info(f"Build #{metrics.build_number}: {metrics.passed_tests}/{metrics.total_tests} passed ({metrics.pass_rate:.1f}%)")
+
+            # Extract test details from suites
+            if 'suites' in robot_data:
+                logger.info(f"Found 'suites' key, type: {type(robot_data['suites'])}")
+                if isinstance(robot_data['suites'], list):
+                    logger.info(f"Processing {len(robot_data['suites'])} suites")
+                    self._extract_suite_details(robot_data['suites'], metrics)
+                else:
+                    # Sometimes it's a single suite object
+                    self._extract_suite_details([robot_data['suites']], metrics)
+            elif 'suite' in robot_data:
+                # Alternative structure
+                logger.info(f"Found 'suite' key")
+                self._extract_suite_details([robot_data['suite']], metrics)
+            else:
+                logger.warning(f"No 'suites' or 'suite' key found in robot_data")
+
+            # If we still have 0 tests after extraction, log it
+            if metrics.total_tests == 0 and len(metrics.test_details) > 0:
+                logger.info(f"Recalculating total from extracted test details: {len(metrics.test_details)}")
+                metrics.total_tests = len(metrics.test_details)
+                metrics.passed_tests = len([t for t in metrics.test_details if t.get('status') in ['PASS', 'PASSED']])
+                metrics.failed_tests = len([t for t in metrics.test_details if t.get('status') in ['FAIL', 'FAILED', 'FAILURE']])
+                if metrics.total_tests > 0:
+                    metrics.pass_rate = (metrics.passed_tests / metrics.total_tests) * 100
+
+            logger.info(f"Final metrics for build #{build_num}: total={metrics.total_tests}, passed={metrics.passed_tests}, failed={metrics.failed_tests}, test_details={len(metrics.test_details)}")
+
+        except Exception as e:
+            logger.error(f"Error parsing robot results for build #{build_info.get('number', 'unknown')}: {type(e).__name__}: {e}")
+            logger.error(f"Robot data structure: {str(robot_data)[:1000]}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+
+        return metrics
+
+    def _extract_suite_details(self, suites: List[Dict], metrics: RFTestMetrics):
+        """Extract detailed information from test suites"""
+        if not suites:
+            logger.warning("No suites provided to extract")
+            return
+
+        logger.info(f"Extracting from {len(suites)} suite(s)")
+
+        for idx, suite in enumerate(suites):
+            if not isinstance(suite, dict):
+                logger.warning(f"Skipping invalid suite at index {idx}: {type(suite)}")
+                continue
+
+            suite_name = suite.get('name', 'Unknown')
+            logger.info(f"Processing suite: {suite_name}, keys: {list(suite.keys())}")
+
+            suite_info = {
+                'name': suite_name,
+                'passed': suite.get('passCount', suite.get('passed', 0)),
+                'failed': suite.get('failCount', suite.get('failed', 0)),
+                'duration': suite.get('duration', 0)
+            }
+            metrics.suite_details.append(suite_info)
+
+            # Extract test cases - handle different field names
+            test_cases = suite.get('testCases', suite.get('cases', suite.get('tests', [])))
+            logger.info(f"Suite '{suite_name}' has {len(test_cases) if test_cases else 0} test cases")
+
+            if test_cases:
+                for test_idx, test in enumerate(test_cases):
+                    if not isinstance(test, dict):
+                        logger.warning(f"Skipping invalid test at index {test_idx} in suite '{suite_name}'")
+                        continue
+
+                    test_name = test.get('name', 'Unknown')
+                    test_status = test.get('status', test.get('result', 'UNKNOWN'))
+
+                    test_info = {
+                        'name': test_name,
+                        'status': test_status,
+                        'duration': test.get('duration', 0),
+                        'suite': suite_name
+                    }
+                    metrics.test_details.append(test_info)
+
+                    logger.debug(f"  Test: {test_name} - {test_status}")
+
+                    # Track failed tests
+                    status = test_info['status'].upper()
+                    if status in ['FAIL', 'FAILED', 'FAILURE']:
+                        failed_info = test_info.copy()
+                        failed_info['message'] = test.get('errorMsg', test.get('error', test.get('message', 'No error message')))
+                        metrics.failed_test_details.append(failed_info)
+
+            # Recursively process nested suites - handle different field names
+            child_suites = suite.get('childSuites', suite.get('children', suite.get('suites', [])))
+            if child_suites:
+                logger.info(f"Suite '{suite_name}' has {len(child_suites)} child suite(s)")
+                self._extract_suite_details(child_suites, metrics)
+            else:
+                logger.debug(f"Suite '{suite_name}' has no child suites")
+
+    def analyze_trends(self, metrics_list: List[RFTestMetrics]) -> Dict[str, Any]:
+        """Analyze trends across multiple test runs"""
+        if not metrics_list:
+            logger.warning("No metrics provided for trend analysis")
+            return {}
+
+        # Filter out metrics with no tests
+        valid_metrics = [m for m in metrics_list if m.total_tests > 0]
+        if not valid_metrics:
+            logger.warning("No valid metrics (all have 0 tests)")
+            return {
+                'total_runs': len(metrics_list),
+                'average_pass_rate': 0.0,
+                'error': 'No valid test data found'
+            }
+
+        try:
+            # Use valid_metrics for calculations
+            pass_rates = [m.pass_rate for m in valid_metrics]
+            exec_times = [m.execution_time for m in valid_metrics]
+
+            analysis = {
+                'total_runs': len(valid_metrics),
+                'average_pass_rate': float(np.mean(pass_rates)) if pass_rates else 0.0,
+                'pass_rate_trend': self._calculate_trend(pass_rates),
+                'average_execution_time': float(np.mean(exec_times)) if exec_times else 0.0,
+                'execution_time_trend': self._calculate_trend(exec_times),
+                'stability_score': self._calculate_stability(valid_metrics),
+                'most_failed_tests': self._get_most_failed_tests(valid_metrics),
+                'slowest_tests': self._get_slowest_tests(valid_metrics),
+                'flaky_tests': self._detect_flaky_tests(valid_metrics)
+            }
+
+            logger.info(f"Analysis complete: {len(valid_metrics)} builds, avg pass rate: {analysis['average_pass_rate']:.1f}%")
+
+            return analysis
+        except Exception as e:
+            logger.error(f"Error in analyze_trends: {e}")
+            return {
+                'total_runs': len(metrics_list),
+                'error': str(e)
+            }
+
+    def _calculate_trend(self, values: List[float]) -> str:
+        """Calculate if values are trending up, down, or stable"""
+        if len(values) < 2:
+            return "insufficient_data"
+
+        # Simple linear regression
+        x = np.arange(len(values))
+        y = np.array(values)
+        slope = np.polyfit(x, y, 1)[0]
+
+        if abs(slope) < 0.1:
+            return "stable"
+        elif slope > 0:
+            return "improving"
+        else:
+            return "degrading"
+
+    def _calculate_stability(self, metrics_list: List[RFTestMetrics]) -> float:
+        """Calculate test stability score (0-100)"""
+        if not metrics_list:
+            return 0.0
+
+        pass_rates = [m.pass_rate for m in metrics_list]
+
+        # Stability is inverse of variance
+        variance = np.var(pass_rates)
+        stability = max(0, 100 - variance)
+
+        return round(stability, 2)
+
+    def _get_most_failed_tests(self, metrics_list: List[RFTestMetrics]) -> List[Dict[str, Any]]:
+        """Get tests that fail most frequently"""
+        failure_count = defaultdict(int)
+        failure_details = defaultdict(lambda: {'messages': [], 'suites': set()})
+
+        for metrics in metrics_list:
+            for failed_test in metrics.failed_test_details:
+                test_name = failed_test['name']
+                failure_count[test_name] += 1
+                failure_details[test_name]['messages'].append(failed_test.get('message', ''))
+                failure_details[test_name]['suites'].add(failed_test.get('suite', 'Unknown'))
+
+        # Sort by failure count
+        sorted_failures = sorted(failure_count.items(), key=lambda x: x[1], reverse=True)
+
+        result = []
+        for test_name, count in sorted_failures[:10]:
+            result.append({
+                'test': test_name,
+                'failure_count': count,
+                'failure_rate': (count / len(metrics_list)) * 100,
+                'suites': list(failure_details[test_name]['suites']),
+                'sample_messages': failure_details[test_name]['messages'][:3]
+            })
+
+        return result
+
+    def _get_slowest_tests(self, metrics_list: List[RFTestMetrics]) -> List[Dict[str, Any]]:
+        """Get slowest running tests"""
+        test_durations = defaultdict(list)
+
+        for metrics in metrics_list:
+            for test in metrics.test_details:
+                test_durations[test['name']].append(test['duration'])
+
+        # Calculate average duration
+        avg_durations = {
+            test: np.mean(durations)
+            for test, durations in test_durations.items()
+        }
+
+        # Sort by duration
+        sorted_tests = sorted(avg_durations.items(), key=lambda x: x[1], reverse=True)
+
+        return [
+            {'test': test, 'avg_duration': duration}
+            for test, duration in sorted_tests[:10]
+        ]
+
+    def _detect_flaky_tests(self, metrics_list: List[RFTestMetrics]) -> List[Dict[str, Any]]:
+        """Detect tests that pass/fail inconsistently"""
+        test_results = defaultdict(list)
+
+        for metrics in metrics_list:
+            for test in metrics.test_details:
+                test_results[test['name']].append(test['status'])
+
+        flaky_tests = []
+        for test_name, results in test_results.items():
+            if len(results) < 3:
+                continue
+
+            # Count passes and fails
+            passes = results.count('PASS')
+            fails = results.count('FAIL')
+            total = len(results)
+
+            # Flaky if both passes and fails exist and neither dominates completely
+            if passes > 0 and fails > 0:
+                flakiness = min(passes, fails) / total
+                if flakiness > 0.2:  # At least 20% inconsistency
+                    flaky_tests.append({
+                        'test': test_name,
+                        'total_runs': total,
+                        'passes': passes,
+                        'fails': fails,
+                        'flakiness_score': round(flakiness * 100, 2)
+                    })
+
+        # Sort by flakiness score
+        flaky_tests.sort(key=lambda x: x['flakiness_score'], reverse=True)
+
+        return flaky_tests[:10]
+
+    def generate_ai_insights(self, analysis: Dict[str, Any], metrics_list: List[RFTestMetrics] = None) -> Dict[str, Any]:
+        """Generate comprehensive AI-powered insights with root cause analysis"""
+        if not self.azure_client or not AZURE_AVAILABLE:
+            return self._generate_enhanced_basic_insights(analysis, metrics_list or [])
+
+        try:
+            # Perform deep analysis
+            root_causes = self._analyze_root_causes(analysis, metrics_list or [])
+            patterns = self._detect_test_patterns(metrics_list or [])
+            quality_score = self._calculate_quality_score(analysis)
+
+            # Prepare comprehensive prompt for AI analysis
+            prompt = self._create_comprehensive_analysis_prompt(
+                analysis, root_causes, patterns, quality_score
+            )
+
+            # Get AI insights with more tokens for detailed analysis
+            response = self.azure_client.generate_response(
+                prompt=prompt,
+                max_tokens=2500,
+                temperature=0.7
+            )
+
+            # Parse AI response
+            insights = self._parse_ai_response(response)
+
+            # Enhance with calculated metrics
+            insights['root_causes'] = root_causes
+            insights['patterns'] = patterns
+            insights['quality_score'] = quality_score
+            insights['actionable_items'] = self._generate_actionable_items(analysis, root_causes)
+
+            return insights
+
+        except Exception as e:
+            logger.error(f"Error generating AI insights: {e}")
+            return self._generate_enhanced_basic_insights(analysis, metrics_list or [])
+
+    def _analyze_root_causes(self, analysis: Dict, metrics_list: List[RFTestMetrics]) -> Dict[str, List[str]]:
+        """Analyze root causes of failures using pattern matching and error analysis"""
+        root_causes = {
+            'environmental': [],
+            'test_design': [],
+            'application': [],
+            'infrastructure': [],
+            'timing': [],
+            'data': []
+        }
+
+            try:
+                # Analyze failure patterns
+                failed_tests = analysis.get('most_failed_tests', [])
+                flaky_tests = analysis.get('flaky_tests', [])
+
+                # Environmental issues - Flaky tests indicate environment instability
+                if flaky_tests:
+                    flakiness_severity = 'HIGH' if len(flaky_tests) > 5 else 'MEDIUM' if len(flaky_tests) > 2 else 'LOW'
+                    root_causes['environmental'].append(
+                        f"[{flakiness_severity}] {len(flaky_tests)} flaky tests detected - indicates environment instability or race conditions"
+                    )
+
+                # Timing issues - Slow tests may cause timeouts
+                slow_tests = analysis.get('slowest_tests', [])
+                if slow_tests:
+                    very_slow = [t for t in slow_tests if t.get('avg_duration', 0) > 60000]  # > 1 minute
+                    if very_slow:
+                        root_causes['timing'].append(
+                            f"[HIGH] {len(very_slow)} tests taking >60s - potential timeout/performance issues"
+                        )
+
+                # Test design issues - High failure rate indicates poor test design
+                if failed_tests:
+                    chronic_failures = [t for t in failed_tests if t.get('failure_rate', 0) > 70]
+                    if chronic_failures:
+                        root_causes['test_design'].append(
+                            f"[CRITICAL] {len(chronic_failures)} tests failing >70% - likely test design issues or invalid assertions"
+                        )
+
+                # Application issues - Degrading trend indicates app regression
+                if analysis.get('pass_rate_trend') == 'degrading':
+                    root_causes['application'].append(
+                        "[HIGH] Pass rate declining over time - potential application regression or new bugs introduced"
+                    )
+
+                # Analyze error message patterns from actual failures
+                error_patterns = self._extract_error_patterns(metrics_list)
+                for category, patterns in error_patterns.items():
+                    if category in root_causes and patterns:
+                        root_causes[category].extend(patterns)
+
+                # Stability analysis
+                stability_score = analysis.get('stability_score', 0)
+                if stability_score < 70:
+                    root_causes['environmental'].append(
+                        f"[HIGH] Low stability score ({stability_score:.1f}/100) - inconsistent test environment or data"
+                    )
+
+            except Exception as e:
+                logger.error(f"Error analyzing root causes: {e}")
+
+            return root_causes
+
+        def _extract_error_patterns(self, metrics_list: List[RFTestMetrics]) -> Dict[str, List[str]]:
+            """Extract and categorize common error patterns from failure messages"""
+            from collections import Counter
+
+            patterns = defaultdict(list)
+            error_keywords = {
+                'environmental': ['connection refused', 'timeout', 'network', 'unreachable', 'dns', 'socket'],
+                'application': ['assertion failed', 'unexpected value', 'incorrect', 'null pointer', 'index out'],
+                'infrastructure': ['database', 'server error', 'service unavailable', '503', '502', '500'],
+                'data': ['missing data', 'invalid format', 'not found', 'empty', 'null'],
+                'timing': ['timeout', 'wait', 'stale element', 'no such element']
+            }
+
+            all_errors = []
+            for metrics in metrics_list:
+                for failed_test in metrics.failed_test_details:
+                    message = failed_test.get('message', '').lower()
+                    if message and len(message) > 10:
+                        all_errors.append(message)
+
+            # Count occurrences of error patterns
+            error_counts = Counter()
+            for error in all_errors:
+                for category, keywords in error_keywords.items():
+                    for keyword in keywords:
+                        if keyword in error:
+                            error_counts[(category, keyword)] += 1
+
+            # Report significant patterns (appearing in 3+ failures)
+            for (category, keyword), count in error_counts.most_common(15):
+                if count >= 3:
+                    severity = 'CRITICAL' if count > 10 else 'HIGH' if count > 5 else 'MEDIUM'
+                    patterns[category].append(
+                        f"[{severity}] '{keyword}' appears in {count} failure messages - investigate {keyword}-related issues"
+                    )
+
+            return dict(patterns)
+
+        def _detect_test_patterns(self, metrics_list: List[RFTestMetrics]) -> Dict[str, Any]:
+            """Detect temporal and recurring patterns in test execution"""
+            patterns = {
+                'temporal': [],
+                'recurring': [],
+                'correlation': [],
+                'anomalies': []
+            }
+
+            if len(metrics_list) < 5:
+                return patterns
+
+            try:
+                # Temporal patterns - Time-based analysis
+                timestamps = [m.timestamp for m in metrics_list]
+                pass_rates = [m.pass_rate for m in metrics_list]
+
+                # Weekend vs Weekday analysis
+                weekend_data = [(ts, pr) for ts, pr in zip(timestamps, pass_rates) if ts.weekday() >= 5]
+                weekday_data = [(ts, pr) for ts, pr in zip(timestamps, pass_rates) if ts.weekday() < 5]
+
+                if weekend_data and weekday_data:
+                    weekend_avg = np.mean([pr for _, pr in weekend_data])
+                    weekday_avg = np.mean([pr for _, pr in weekday_data])
+                    difference = abs(weekend_avg - weekday_avg)
+
+                    if difference > 5:
+                        trend = "higher" if weekend_avg > weekday_avg else "lower"
+                        patterns['temporal'].append(
+                            f"Weekend pass rate ({weekend_avg:.1f}%) is {difference:.1f}% {trend} than weekday ({weekday_avg:.1f}%) - may indicate environment or data refresh issues"
+                        )
+
+                # Time-of-day analysis
+                hours = [ts.hour for ts in timestamps]
+                if len(set(hours)) > 3:
+                    business_hours_data = [(ts, pr) for ts, pr in zip(timestamps, pass_rates)
+                                          if 9 <= ts.hour <= 17]
+                    off_hours_data = [(ts, pr) for ts, pr in zip(timestamps, pass_rates)
+                                     if ts.hour < 9 or ts.hour > 17]
+
+                    if business_hours_data and off_hours_data:
+                        bh_avg = np.mean([pr for _, pr in business_hours_data])
+                        oh_avg = np.mean([pr for _, pr in off_hours_data])
+                        difference = abs(bh_avg - oh_avg)
+
+                        if difference > 5:
+                            patterns['temporal'].append(
+                                f"Business hours pass rate differs by {difference:.1f}% from off-hours - possible load or concurrency issues"
+                            )
+
+                # Recurring failure patterns
+                test_failure_builds = defaultdict(list)
+                for metrics in metrics_list:
+                    for failed_test in metrics.failed_test_details:
+                        test_failure_builds[failed_test['name']].append(metrics.build_number)
+
+                # Find consecutively failing tests
+                for test_name, builds in test_failure_builds.items():
+                    if len(builds) >= 3:
+                        builds_sorted = sorted(builds)
+                        consecutive_count = 1
+                        max_consecutive = 1
+
+                        for i in range(1, len(builds_sorted)):
+                            if builds_sorted[i] - builds_sorted[i-1] == 1:
+                                consecutive_count += 1
+                                max_consecutive = max(max_consecutive, consecutive_count)
+                            else:
+                                consecutive_count = 1
+
+                        if max_consecutive >= 3:
+                            patterns['recurring'].append(
+                                f"Test '{test_name}' failed {max_consecutive} consecutive times (builds {builds_sorted[0]}-{builds_sorted[-1]}) - systematic issue"
+                            )
+
+                # Detect anomalies using statistical methods
+                if len(pass_rates) >= 10:
+                    mean_pass_rate = np.mean(pass_rates)
+                    std_pass_rate = np.std(pass_rates)
+
+                    for i, (ts, pr) in enumerate(zip(timestamps, pass_rates)):
+                        # Z-score for anomaly detection
+                        if std_pass_rate > 0:
+                            z_score = abs((pr - mean_pass_rate) / std_pass_rate)
+                            if z_score > 2:  # More than 2 standard deviations
+                                build_num = metrics_list[i].build_number if i < len(metrics_list) else 'unknown'
+                                patterns['anomalies'].append(
+                                    f"Build #{build_num} on {ts.strftime('%Y-%m-%d')} shows unusual pass rate ({pr:.1f}%) - investigate for special conditions"
+                                )
+
+            except Exception as e:
+                logger.error(f"Error detecting patterns: {e}")
+
+            return patterns
+
+        def _calculate_quality_score(self, analysis: Dict) -> Dict[str, Any]:
+            """Calculate comprehensive test suite quality score"""
+            quality_metrics = {
+                'overall_score': 0,
+                'reliability': 0,
+                'performance': 0,
+                'coverage': 0,
+                'maintainability': 0,
+                'grade': 'F',
+                'breakdown': {}
+            }
+
+            try:
+                # Reliability score (40% weight) - Based on pass rate and stability
+                pass_rate = analysis.get('average_pass_rate', 0)
+                stability = analysis.get('stability_score', 0)
+                flaky_count = len(analysis.get('flaky_tests', []))
+
+                reliability_base = (pass_rate * 0.65) + (stability * 0.35)
+
+                # Penalty for flaky tests
+                if flaky_count > 10:
+                    reliability = reliability_base * 0.7
+                elif flaky_count > 5:
+                    reliability = reliability_base * 0.8
+                elif flaky_count > 0:
+                    reliability = reliability_base * 0.9
+                else:
+                    reliability = reliability_base
+
+                quality_metrics['reliability'] = round(reliability, 1)
+                quality_metrics['breakdown']['pass_rate'] = round(pass_rate, 1)
+                quality_metrics['breakdown']['stability'] = round(stability, 1)
+                quality_metrics['breakdown']['flaky_penalty'] = round((reliability_base - reliability), 1)
+
+                # Performance score (25% weight) - Based on execution time
+                avg_exec_time = analysis.get('average_execution_time', 0) / 1000  # Convert to seconds
+                exec_trend = analysis.get('execution_time_trend', '')
+
+                if avg_exec_time > 0:
+                    # Score based on execution time ranges
+                    if avg_exec_time < 60:  # < 1 minute - Excellent
+                        performance = 95
+                    elif avg_exec_time < 180:  # < 3 minutes - Good
+                        performance = 85
+                    elif avg_exec_time < 300:  # < 5 minutes - Acceptable
+                        performance = 70
+                    elif avg_exec_time < 600:  # < 10 minutes - Poor
+                        performance = 50
+                    else:  # > 10 minutes - Very Poor
+                        performance = 30
+
+                    # Adjust based on trend
+                    if exec_trend == 'degrading':
+                        performance *= 0.9
+                    elif exec_trend == 'improving':
+                        performance = min(100, performance * 1.05)
+
+                    quality_metrics['performance'] = round(performance, 1)
+                    quality_metrics['breakdown']['avg_exec_time'] = round(avg_exec_time, 1)
+                else:
+                    quality_metrics['performance'] = 50
+
+                # Maintainability score (20% weight) - Based on failure patterns
+                failed_tests = analysis.get('most_failed_tests', [])
+                chronic_failures = [t for t in failed_tests if t.get('failure_rate', 0) > 50]
+
+                if len(chronic_failures) > 10:
+                    maintainability = 40
+                elif len(chronic_failures) > 5:
+                    maintainability = 60
+                elif len(chronic_failures) > 0:
+                    maintainability = 75
+                else:
+                    maintainability = 90
+
+                # Additional penalty for high total failure count
+                if len(failed_tests) > 20:
+                    maintainability *= 0.85
+
+                quality_metrics['maintainability'] = round(maintainability, 1)
+                quality_metrics['breakdown']['chronic_failures'] = len(chronic_failures)
+                quality_metrics['breakdown']['total_failures'] = len(failed_tests)
+
+                # Coverage score (15% weight) - Based on test execution frequency
+                total_runs = analysis.get('total_runs', 0)
+                if total_runs >= 30:
+                    coverage = 90
+                elif total_runs >= 20:
+                    coverage = 80
+                elif total_runs >= 10:
+                    coverage = 70
+                elif total_runs >= 5:
+                    coverage = 55
+                else:
+                    coverage = 40
+
+                quality_metrics['coverage'] = coverage
+                quality_metrics['breakdown']['total_runs'] = total_runs
+
+                # Overall score (weighted average)
+                overall = (
+                    quality_metrics['reliability'] * 0.40 +
+                    quality_metrics['performance'] * 0.25 +
+                    quality_metrics['maintainability'] * 0.20 +
+                    quality_metrics['coverage'] * 0.15
+                )
+                quality_metrics['overall_score'] = round(overall, 1)
+
+                # Assign letter grade
+                if overall >= 90:
+                    quality_metrics['grade'] = 'A'
+                    quality_metrics['grade_description'] = 'Excellent'
+                elif overall >= 80:
+                    quality_metrics['grade'] = 'B'
+                    quality_metrics['grade_description'] = 'Good'
+                elif overall >= 70:
+                    quality_metrics['grade'] = 'C'
+                    quality_metrics['grade_description'] = 'Acceptable'
+                elif overall >= 60:
+                    quality_metrics['grade'] = 'D'
+                    quality_metrics['grade_description'] = 'Poor'
+                else:
+                    quality_metrics['grade'] = 'F'
+                    quality_metrics['grade_description'] = 'Failing'
+
+            except Exception as e:
+                logger.error(f"Error calculating quality score: {e}")
+
+            return quality_metrics
+
+        def _generate_actionable_items(self, analysis: Dict, root_causes: Dict) -> Dict[str, List[Dict]]:
+            """Generate prioritized, actionable items based on analysis"""
+            actionable = {
+                'immediate': [],  # Within 24 hours
+                'short_term': [],  # Within 1 week
+                'long_term': []  # Within 1 month
+            }
+
+            try:
+                # Immediate actions - Critical issues
+                pass_rate = analysis.get('average_pass_rate', 0)
+                if pass_rate < 75:
+                    actionable['immediate'].append({
+                        'priority': 'CRITICAL',
+                        'action': 'Investigate and fix top failing tests',
+                        'reason': f'Pass rate at {pass_rate:.1f}% is critically low',
+                        'tests': [t['test'] for t in analysis.get('most_failed_tests', [])[:3]],
+                        'estimated_impact': f'Could improve pass rate by 10-15%',
+                        'effort': 'High'
+                    })
+
+                # Flaky tests - Immediate if many, short-term if few
+                flaky_tests = analysis.get('flaky_tests', [])
+                if len(flaky_tests) > 5:
+                    actionable['immediate'].append({
+                        'priority': 'HIGH',
+                        'action': 'Stabilize flaky tests',
+                        'reason': f'{len(flaky_tests)} flaky tests undermining confidence',
+                        'tests': [t['test'] for t in flaky_tests[:5]],
+                        'estimated_impact': 'Restore confidence in test results',
+                        'effort': 'Medium to High'
+                    })
+                elif len(flaky_tests) > 0:
+                    actionable['short_term'].append({
+                        'priority': 'MEDIUM',
+                        'action': 'Fix flaky tests',
+                        'reason': f'{len(flaky_tests)} tests showing instability',
+                        'tests': [t['test'] for t in flaky_tests],
+                        'estimated_impact': 'Improve stability score',
+                        'effort': 'Medium'
+                    })
+
+                # Slow tests - Short-term optimization
+                slow_tests = analysis.get('slowest_tests', [])
+                very_slow = [t for t in slow_tests if t.get('avg_duration', 0) > 60000]
+                if very_slow:
+                    actionable['short_term'].append({
+                        'priority': 'MEDIUM',
+                        'action': 'Optimize slow tests',
+                        'reason': f'{len(very_slow)} tests taking >60s each',
+                        'tests': [t['test'] for t in very_slow[:5]],
+                        'estimated_impact': 'Reduce total execution time by 20-30%',
+                        'effort': 'Low to Medium'
+                    })
+
+                # Environmental issues - Based on root causes
+                if root_causes.get('environmental'):
+                    actionable['short_term'].append({
+                        'priority': 'HIGH',
+                        'action': 'Stabilize test environment',
+                        'reason': 'Environment instability detected',
+                        'details': root_causes['environmental'][:3],
+                        'estimated_impact': 'Reduce flakiness and improve reliability',
+                        'effort': 'Medium'
+                    })
+
+                # Test design issues - Long-term improvements
+                if root_causes.get('test_design'):
+                    actionable['long_term'].append({
+                        'priority': 'MEDIUM',
+                        'action': 'Refactor poorly designed tests',
+                        'reason': 'Test design issues identified',
+                        'details': root_causes['test_design'][:3],
+                        'estimated_impact': 'Improved maintainability and reliability',
+                        'effort': 'High'
+                    })
+
+                # Monitoring and alerting - Long-term
+                stability = analysis.get('stability_score', 0)
+                if stability < 80:
+                    actionable['long_term'].append({
+                        'priority': 'LOW',
+                        'action': 'Implement continuous monitoring',
+                        'reason': f'Low stability score ({stability:.1f}/100) needs tracking',
+                        'details': ['Set up alerts for pass rate drops', 'Dashboard for daily tracking'],
+                        'estimated_impact': 'Early detection of issues',
+                        'effort': 'Low'
+                    })
+
+            except Exception as e:
+                logger.error(f"Error generating actionable items: {e}")
+
+            return actionable
+
+        def _create_comprehensive_analysis_prompt(self, analysis: Dict, root_causes: Dict,
+                                                 patterns: Dict, quality_score: Dict) -> str:
+            """Create comprehensive prompt with all analysis data"""
+            prompt = f"""
+    You are an expert test automation analyst with deep knowledge of Robot Framework and software quality engineering.
+
+    Analyze this comprehensive test suite data and provide actionable, specific insights:
+
+    ## QUALITY ASSESSMENT:
+    Overall Grade: {quality_score.get('grade', 'N/A')} ({quality_score.get('overall_score', 0):.1f}/100)
+    - Reliability: {quality_score.get('reliability', 0):.1f}/100
+    - Performance: {quality_score.get('performance', 0):.1f}/100
+    - Maintainability: {quality_score.get('maintainability', 0):.1f}/100
+    - Coverage: {quality_score.get('coverage', 0):.1f}/100
+
+    ## CURRENT METRICS:
+    - Total Runs Analyzed: {analysis.get('total_runs', 0)}
+    - Average Pass Rate: {analysis.get('average_pass_rate', 0):.1f}%
+    - Pass Rate Trend: {analysis.get('pass_rate_trend', 'Unknown')}
+    - Stability Score: {analysis.get('stability_score', 0):.1f}/100
+    - Average Execution Time: {analysis.get('average_execution_time', 0)/1000:.1f} seconds
+
+    ## IDENTIFIED ROOT CAUSES:
+    **Environmental Issues:**
+    {chr(10).join('  - ' + cause for cause in root_causes.get('environmental', ['None detected']))}
+
+    **Application Issues:**
+    {chr(10).join('  - ' + cause for cause in root_causes.get('application', ['None detected']))}
+
+    **Test Design Issues:**
+    {chr(10).join('  - ' + cause for cause in root_causes.get('test_design', ['None detected']))}
+
+    **Infrastructure Issues:**
+    {chr(10).join('  - ' + cause for cause in root_causes.get('infrastructure', ['None detected']))}
+
+    **Timing Issues:**
+    {chr(10).join('  - ' + cause for cause in root_causes.get('timing', ['None detected']))}
+
+    ## DETECTED PATTERNS:
+    **Temporal Patterns:**
+    {chr(10).join('  - ' + p for p in patterns.get('temporal', ['None detected']))}
+
+    **Recurring Issues:**
+    {chr(10).join('  - ' + p for p in patterns.get('recurring', ['None detected']))}
+
+    **Anomalies:**
+    {chr(10).join('  - ' + p for p in patterns.get('anomalies', ['None detected']))}
+
+    ## TOP FAILING TESTS:
+    {chr(10).join('  - ' + t.get('test', 'Unknown') + f" (Failed {t.get('failure_count', 0)} times, {t.get('failure_rate', 0):.1f}% failure rate)" for t in analysis.get('most_failed_tests', [])[:10])}
+
+    ## FLAKY TESTS:
+    {chr(10).join('  - ' + t.get('test', 'Unknown') + f" ({t.get('flakiness_score', 0):.1f}% flakiness, {t.get('passes', 0)}P/{t.get('fails', 0)}F)" for t in analysis.get('flaky_tests', [])[:10])}
+
+    Based on this comprehensive analysis, provide:
+
+    1. **Executive Summary** (2-3 sentences):
+       - Overall health assessment
+       - Most critical concern
+       - Urgency level
+
+    2. **Critical Issues** (Top 5 ranked by severity):
+       Format each as:
+       - **[SEVERITY LEVEL]** Issue Name
+       - Root Cause: Why it's happening
+       - Impact: Effect on system/team
+       - Evidence: Data supporting this
+       
+    3. **Immediate Actions** (Within 24 hours):
+       For each provide:
+       - Specific action to take
+       - Expected outcome
+       - Resources needed
+       - Success criteria
+
+    4. **Short-term Recommendations** (Within 1 week):
+       Prioritized list with:
+       - Action item
+       - Why it matters
+       - Estimated effort
+       - Expected ROI
+
+    5. **Long-term Strategy** (1-3 months):
+       Strategic improvements for:
+       - Test suite architecture
+       - Process improvements
+       - Tool/framework enhancements
+
+    6. **Predicted Impact Timeline**:
+       What happens if critical issues aren't fixed:
+       - Week 1: ...
+       - Week 2: ...
+       - Month 1: ...
+
+    7. **Success Metrics & Targets**:
+       Specific, measurable goals:
+       - Pass Rate: Current X% → Target Y% by [date]
+       - Stability: Current X → Target Y
+       - Execution Time: Current X → Target Y
+       - Flaky Tests: Current X → Target 0
+
+    8. **Quick Wins** (Highest ROI, Lowest Effort):
+       3-5 actionable items that can be completed quickly with significant impact
+
+    Format response as JSON with keys: executive_summary, critical_issues (array of objects), immediate_actions (array), short_term_recommendations (array), long_term_strategy (array), predicted_impact (object with timeline keys), success_metrics (object), quick_wins (array)
+    """
+            return prompt
+
+        def _generate_enhanced_basic_insights(self, analysis: Dict, metrics_list: List[RFTestMetrics]) -> Dict[str, Any]:
+            """Generate enhanced basic insights without AI"""
+            root_causes = self._analyze_root_causes(analysis, metrics_list)
+            patterns = self._detect_test_patterns(metrics_list)
+            quality_score = self._calculate_quality_score(analysis)
+            actionable = self._generate_actionable_items(analysis, root_causes)
+
+            insights = {
+                'executive_summary': self._create_executive_summary(analysis, quality_score),
+                'critical_issues': self._identify_critical_issues(analysis, root_causes),
+                'root_causes': root_causes,
+                'patterns': patterns,
+                'quality_score': quality_score,
+                'immediate_actions': actionable.get('immediate', []),
+                'short_term_recommendations': actionable.get('short_term', []),
+                'long_term_strategy': actionable.get('long_term', []),
+                'quick_wins': self._identify_quick_wins(analysis),
+                'success_metrics': self._define_success_metrics(analysis, quality_score)
+            }
+
+            return insights
+
+        def _create_executive_summary(self, analysis: Dict, quality_score: Dict) -> str:
+            """Create executive summary"""
+            grade = quality_score.get('grade', 'N/A')
+            score = quality_score.get('overall_score', 0)
+            grade_desc = quality_score.get('grade_description', '')
+            pass_rate = analysis.get('average_pass_rate', 0)
+            trend = analysis.get('pass_rate_trend', 'stable')
+
+            if grade in ['A', 'B'] and pass_rate >= 85:
+                urgency = "LOW"
+                status = f"Test suite is in {grade_desc.lower()} condition"
+            elif grade in ['C'] or (grade in ['B'] and pass_rate < 85):
+                urgency = "MEDIUM"
+                status = f"Test suite requires attention"
+            else:
+                urgency = "HIGH"
+                status = f"Test suite needs immediate action"
+
+            summary = f"{status} (Grade {grade}, {score:.1f}/100). "
+            summary += f"Pass rate is {pass_rate:.1f}% and {trend}. "
+
+            # Add most critical concern
+            flaky_count = len(analysis.get('flaky_tests', []))
+            failed_count = len(analysis.get('most_failed_tests', []))
+
+            if pass_rate < 75:
+                summary += f"CRITICAL: Low pass rate requires immediate investigation. "
+            elif flaky_count > 10:
+                summary += f"CONCERN: {flaky_count} flaky tests undermining reliability. "
+            elif failed_count > 15:
+                summary += f"CONCERN: {failed_count} tests failing consistently. "
+            else:
+                summary += "Continue monitoring for stability. "
+
+            summary += f"Urgency: {urgency}."
+
+            return summary
+
+        def _identify_critical_issues(self, analysis: Dict, root_causes: Dict) -> List[Dict]:
+            """Identify and prioritize critical issues"""
+            issues = []
+
+            pass_rate = analysis.get('average_pass_rate', 0)
+            stability = analysis.get('stability_score', 0)
+            flaky_tests = analysis.get('flaky_tests', [])
+            failed_tests = analysis.get('most_failed_tests', [])
+
+            # Critical pass rate
+            if pass_rate < 70:
+                issues.append({
+                    'severity': 'CRITICAL',
+                    'issue': 'Very Low Pass Rate',
+                    'root_cause': 'Multiple test failures indicating systemic issues',
+                    'impact': 'High risk of production incidents, loss of confidence in releases',
+                    'evidence': f'Pass rate at {pass_rate:.1f}%, {len(failed_tests)} failing tests'
+                })
+            elif pass_rate < 85:
+                issues.append({
+                    'severity': 'HIGH',
+                    'issue': 'Below Target Pass Rate',
+                    'root_cause': 'Test failures need investigation and fixes',
+                    'impact': 'Reduced quality assurance effectiveness',
+                    'evidence': f'Pass rate at {pass_rate:.1f}%, target is 95%+'
+                })
+
+            # Flaky tests
+            if len(flaky_tests) > 10:
+                issues.append({
+                    'severity': 'CRITICAL',
+                    'issue': 'Extensive Test Flakiness',
+                    'root_cause': root_causes.get('environmental', ['Environment instability'])[0] if root_causes.get('environmental') else 'Environment instability',
+                    'impact': 'Cannot trust test results, wasting developer time on false failures',
+                    'evidence': f'{len(flaky_tests)} flaky tests, stability score: {stability:.1f}/100'
+                })
+            elif len(flaky_tests) > 5:
+                issues.append({
+                    'severity': 'HIGH',
+                    'issue': 'Significant Test Flakiness',
+                    'root_cause': 'Race conditions or timing issues in tests',
+                    'impact': 'Unreliable test results, false positives/negatives',
+                    'evidence': f'{len(flaky_tests)} flaky tests detected'
+                })
+
+            # Degrading trend
+            if analysis.get('pass_rate_trend') == 'degrading':
+                issues.append({
+                    'severity': 'HIGH',
+                    'issue': 'Declining Pass Rate Trend',
+                    'root_cause': root_causes.get('application', ['Application regressions'])[0] if root_causes.get('application') else 'Application quality degrading',
+                    'impact': 'Quality deteriorating over time, technical debt accumulating',
+                    'evidence': f'Pass rate trending downward over {analysis.get("total_runs", 0)} runs'
+                })
+
+            # Chronic failures
+            chronic = [t for t in failed_tests if t.get('failure_rate', 0) > 70]
+            if len(chronic) > 5:
+                issues.append({
+                    'severity': 'HIGH',
+                    'issue': 'Multiple Chronically Failing Tests',
+                    'root_cause': root_causes.get('test_design', ['Test design issues'])[0] if root_causes.get('test_design') else 'Invalid test assertions or outdated tests',
+                    'impact': 'Tests not providing value, consuming CI/CD resources',
+                    'evidence': f'{len(chronic)} tests failing >70% of the time'
+                })
+
+            # Low stability
+            if stability < 60:
+                issues.append({
+                    'severity': 'HIGH',
+                    'issue': 'Extremely Unstable Test Suite',
+                    'root_cause': 'Inconsistent test environment or data dependencies',
+                    'impact': 'Cannot rely on test results for release decisions',
+                    'evidence': f'Stability score: {stability:.1f}/100 (target: 90+)'
+                })
+
+            return issues[:5]  # Return top 5
+
+        def _identify_quick_wins(self, analysis: Dict) -> List[Dict]:
+            """Identify quick win opportunities"""
+            wins = []
+
+            slow_tests = analysis.get('slowest_tests', [])
+            if slow_tests:
+                wins.append({
+                    'action': 'Optimize slowest tests',
+                    'tests': [t['test'] for t in slow_tests[:3]],
+                    'current_time': f"{slow_tests[0].get('avg_duration', 0)/1000:.1f}s average",
+                    'potential_saving': 'Reduce execution time by 20-30%',
+                    'effort': 'Low',
+                    'roi': 'High - Faster feedback loops'
+                })
+
+            failed_tests = analysis.get('most_failed_tests', [])
+            if failed_tests:
+                easy_fixes = [t for t in failed_tests if t.get('failure_rate', 0) > 90]
+                if easy_fixes:
+                    wins.append({
+                        'action': 'Fix or disable consistently failing tests',
+                        'tests': [t['test'] for t in easy_fixes[:3]],
+                        'reason': 'Tests failing >90% are likely broken, not catching bugs',
+                        'potential_saving': 'Improve pass rate by 5-10%',
+                        'effort': 'Low - Either fix assertion or disable',
+                        'roi': 'High - Quick pass rate improvement'
+                    })
+
+            flaky_tests = analysis.get('flaky_tests', [])
+            if len(flaky_tests) <= 3:
+                wins.append({
+                    'action': 'Stabilize small number of flaky tests',
+                    'tests': [t['test'] for t in flaky_tests],
+                    'reason': 'Only a few flaky tests - manageable to fix',
+                    'potential_saving': 'Achieve 100% stability',
+                    'effort': 'Medium',
+                    'roi': 'Very High - Eliminate all flakiness'
+                })
+
+            return wins
+
+        def _define_success_metrics(self, analysis: Dict, quality_score: Dict) -> Dict[str, Any]:
+            """Define success metrics with current vs target"""
+            current_pass = analysis.get('average_pass_rate', 0)
+            current_stability = analysis.get('stability_score', 0)
+            current_exec = analysis.get('average_execution_time', 0) / 1000
+            current_flaky = len(analysis.get('flaky_tests', []))
+            current_grade = quality_score.get('grade', 'F')
+
+            return {
+                'pass_rate': {
+                    'current': f"{current_pass:.1f}%",
+                    'target': "95%+",
+                    'timeline': "2 weeks",
+                    'how_to_measure': "Average pass rate across 20 builds"
+                },
+                'stability_score': {
+                    'current': f"{current_stability:.1f}/100",
+                    'target': "90+/100",
+                    'timeline': "3 weeks",
+                    'how_to_measure': "Variance in pass rates over time"
+                },
+                'flaky_tests': {
+                    'current': str(current_flaky),
+                    'target': "0",
+                    'timeline': "4 weeks",
+                    'how_to_measure': "Count of tests with inconsistent pass/fail"
+                },
+                'execution_time': {
+                    'current': f"{current_exec:.1f}s",
+                    'target': f"{current_exec * 0.8:.1f}s (20% reduction)",
+                    'timeline': "1 month",
+                    'how_to_measure': "Average total execution time"
+                },
+                'quality_grade': {
+                    'current': current_grade,
+                    'target': "A",
+                    'timeline': "2 months",
+                    'how_to_measure': "Composite score of all metrics"
+                }
+            }
+
+    def _create_analysis_prompt(self, analysis: Dict[str, Any]) -> str:
+        """Create prompt for AI analysis"""
+        prompt = f"""
+        Analyze the following Robot Framework test execution metrics and provide insights:
+        
+        ## Overall Statistics:
+        - Total Runs: {analysis['total_runs']}
+        - Average Pass Rate: {analysis['average_pass_rate']:.2f}%
+        - Pass Rate Trend: {analysis['pass_rate_trend']}
+        - Average Execution Time: {analysis['average_execution_time']:.2f}ms
+        - Execution Time Trend: {analysis['execution_time_trend']}
+        - Stability Score: {analysis['stability_score']}/100
+        
+        ## Most Failed Tests:
+        {self._format_failed_tests(analysis['most_failed_tests'])}
+        
+        ## Flaky Tests:
+        {self._format_flaky_tests(analysis['flaky_tests'])}
+        
+        ## Slowest Tests:
+        {self._format_slowest_tests(analysis['slowest_tests'])}
+        
+        Please provide:
+        1. Executive Summary: Brief overview of test health
+        2. Key Concerns: Top 3-5 issues that need attention
+        3. Improvement Recommendations: Specific actionable suggestions
+        4. Predicted Impact: What will happen if issues aren't addressed
+        5. Success Indicators: What metrics to monitor for improvement
+        
+        Format your response as JSON with these keys: executive_summary, key_concerns (array), recommendations (array), predicted_impact, success_indicators (array).
+        """
+
+        return prompt
+
+    def _format_failed_tests(self, failed_tests: List[Dict]) -> str:
+        """Format failed tests for prompt"""
+        if not failed_tests:
+            return "None"
+
+        lines = []
+        for test in failed_tests[:5]:
+            lines.append(f"- {test['test']}: Failed {test['failure_count']} times ({test['failure_rate']:.1f}%)")
+
+        return "\n".join(lines)
+
+    def _format_flaky_tests(self, flaky_tests: List[Dict]) -> str:
+        """Format flaky tests for prompt"""
+        if not flaky_tests:
+            return "None"
+
+        lines = []
+        for test in flaky_tests[:5]:
+            lines.append(f"- {test['test']}: {test['flakiness_score']:.1f}% flaky ({test['passes']}P/{test['fails']}F)")
+
+        return "\n".join(lines)
+
+    def _format_slowest_tests(self, slowest_tests: List[Dict]) -> str:
+        """Format slowest tests for prompt"""
+        if not slowest_tests:
+            return "None"
+
+        lines = []
+        for test in slowest_tests[:5]:
+            lines.append(f"- {test['test']}: {test['avg_duration']:.2f}ms avg")
+
+        return "\n".join(lines)
+
+    def _parse_ai_response(self, response: str) -> Dict[str, Any]:
+        """Parse AI response into structured insights"""
+        try:
+            # Try to parse as JSON first
+            insights = json.loads(response)
+            return insights
+        except json.JSONDecodeError:
+            # Fallback: extract structured information
+            return {
+                'executive_summary': response[:500],
+                'key_concerns': ['AI analysis available in response'],
+                'recommendations': ['Review full AI response for recommendations'],
+                'predicted_impact': 'See full analysis',
+                'success_indicators': ['Monitor metrics regularly']
+            }
+
+    def _generate_basic_insights(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate basic insights without AI"""
+        insights = {
+            'executive_summary': self._create_basic_summary(analysis),
+            'key_concerns': self._create_basic_concerns(analysis),
+            'recommendations': self._create_basic_recommendations(analysis),
+            'predicted_impact': 'Continue monitoring test metrics',
+            'success_indicators': [
+                'Pass rate > 95%',
+                'Stability score > 90',
+                'No flaky tests',
+                'Execution time stable or improving'
+            ]
+        }
+
+        return insights
+
+    def _create_basic_summary(self, analysis: Dict[str, Any]) -> str:
+        """Create basic executive summary"""
+        pass_rate = analysis['average_pass_rate']
+        stability = analysis['stability_score']
+
+        if pass_rate >= 95 and stability >= 90:
+            return f"Test suite is healthy with {pass_rate:.1f}% pass rate and {stability:.1f} stability score."
+        elif pass_rate >= 80:
+            return f"Test suite needs attention: {pass_rate:.1f}% pass rate, {stability:.1f} stability score."
+        else:
+            return f"Test suite requires immediate attention: {pass_rate:.1f}% pass rate is below acceptable levels."
+
+    def _create_basic_concerns(self, analysis: Dict[str, Any]) -> List[str]:
+        """Create basic concerns list"""
+        concerns = []
+
+        if analysis['average_pass_rate'] < 95:
+            concerns.append(f"Pass rate is {analysis['average_pass_rate']:.1f}% (target: 95%)")
+
+        if analysis['stability_score'] < 90:
+            concerns.append(f"Test stability is {analysis['stability_score']:.1f} (target: 90+)")
+
+        if analysis['most_failed_tests']:
+            concerns.append(f"{len(analysis['most_failed_tests'])} tests failing frequently")
+
+        if analysis['flaky_tests']:
+            concerns.append(f"{len(analysis['flaky_tests'])} flaky tests detected")
+
+        if analysis['pass_rate_trend'] == 'degrading':
+            concerns.append("Pass rate is trending downward")
+
+        return concerns[:5] if concerns else ['No major concerns detected']
+
+    def _create_basic_recommendations(self, analysis: Dict[str, Any]) -> List[str]:
+        """Create basic recommendations"""
+        recommendations = []
+
+        if analysis['most_failed_tests']:
+            recommendations.append("Fix or investigate frequently failing tests")
+
+        if analysis['flaky_tests']:
+            recommendations.append("Stabilize flaky tests to improve reliability")
+
+        if analysis['execution_time_trend'] == 'degrading':
+            recommendations.append("Optimize slow tests to reduce execution time")
+
+        if analysis['stability_score'] < 90:
+            recommendations.append("Improve test stability by addressing root causes")
+
+        recommendations.append("Set up continuous monitoring of test metrics")
+
+        return recommendations
+
+
+def show_rf_dashboard_analytics():
+    """Main UI for Robot Framework Dashboard Analytics"""
+
+    st.title("🤖 Robot Framework Dashboard Analytics")
+    st.markdown("""
+    Analyze Robot Framework test results from Jenkins with AI-powered insights.
+    Get predictive analytics, trend analysis, and improvement recommendations.
+    """)
+
+    # Configuration section
+    with st.expander("⚙️ Configuration", expanded=True):
+        col1, col2 = st.columns(2)
+
+        with col1:
+            jenkins_url = st.text_input(
+                "Jenkins URL",
+                value=st.session_state.get('rf_jenkins_url', ''),
+                help="e.g., https://jenkins.example.com",
+                placeholder="https://jenkins.example.com"
+            )
+            username = st.text_input(
+                "Jenkins Username",
+                value=st.session_state.get('rf_jenkins_username', ''),
+                placeholder="your-username"
+            )
+
+            # Authentication type toggle
+            auth_type = st.radio(
+                "Authentication Type",
+                options=["API Token (Recommended)", "Password"],
+                index=0 if st.session_state.get('rf_auth_type', 'token') == 'token' else 1,
+                horizontal=True,
+                help="API Token is more secure and recommended by Jenkins"
+            )
+
+        with col2:
+            # Show either API token or password field based on selection
+            if auth_type == "API Token (Recommended)":
+                credential = st.text_input(
+                    "Jenkins API Token",
+                    type="password",
+                    value=st.session_state.get('rf_jenkins_token', ''),
+                    help="Generate from Jenkins > User > Configure > API Token",
+                    key="api_token_input"
+                )
+                st.session_state.rf_auth_type = 'token'
+            else:
+                credential = st.text_input(
+                    "Jenkins Password",
+                    type="password",
+                    value=st.session_state.get('rf_jenkins_token', ''),
+                    help="Your Jenkins account password",
+                    key="password_input"
+                )
+                st.session_state.rf_auth_type = 'password'
+
+            max_builds = st.number_input(
+                "Number of builds to analyze",
+                min_value=5,
+                max_value=100,
+                value=50,
+                help="How many recent builds to fetch"
+            )
+
+        # Save configuration
+        if st.button("💾 Save Configuration"):
+            st.session_state.rf_jenkins_url = jenkins_url
+            st.session_state.rf_jenkins_username = username
+            st.session_state.rf_jenkins_token = credential
+            st.success(f"✅ Configuration saved! Using {auth_type}")
+
+    # Azure OpenAI status
+    st.markdown("---")
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        if AZURE_AVAILABLE:
+            st.success("✅ Azure OpenAI is available for AI-powered insights")
+        else:
+            st.warning("⚠️ Azure OpenAI not available - using basic analytics")
+
+    # Main analysis section
+    if not all([jenkins_url, username, credential]):
+        st.info("👆 Please configure Jenkins credentials above to get started")
+        st.markdown("""
+        ### Getting Started
+        1. Enter your Jenkins URL (e.g., `https://jenkins.example.com`)
+        2. Enter your Jenkins username
+        3. Choose authentication type:
+           - **API Token (Recommended)**: Generate from Jenkins > User > Configure > API Token
+           - **Password**: Use your Jenkins account password
+        4. Click "Save Configuration"
+        5. Select a job and click "Analyze Test Results"
+        """)
+        return
+
+    st.markdown("---")
+    st.subheader("📊 Test Analysis")
+
+    # Initialize clients
+    try:
+        rf_client = RobotFrameworkDashboardClient(jenkins_url, username, credential)
+        azure_client = AzureOpenAIClient() if AZURE_AVAILABLE else None
+        analyzer = RFDashboardAnalyzer(azure_client)
+    except Exception as e:
+        st.error(f"❌ Error initializing clients: {e}")
+        return
+
+    # Test connection button
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        if st.button("🔌 Test Connection"):
+            with st.spinner("Testing connection to Jenkins..."):
+                jobs = rf_client.get_jobs()
+                if jobs:
+                    st.success(f"✅ Successfully connected! Found {len(jobs)} jobs.")
+                else:
+                    st.error("❌ Could not connect to Jenkins or no jobs found. Check your credentials and URL.")
+                    st.info("💡 Tip: Make sure you're using an API token, not a password")
+                    return
+
+    # Job selection
+    with st.spinner("Fetching Jenkins jobs..."):
+        jobs = rf_client.get_jobs()
+
+    if not jobs:
+        st.error("❌ No jobs found or unable to connect to Jenkins")
+        st.markdown("""
+        ### Troubleshooting:
+        - Verify Jenkins URL is correct (include https:// or http://)
+        - Ensure username is correct
+        - Confirm you're using an API token, not your password
+        - Check if you have permission to access Jenkins via API
+        - Try clicking "Test Connection" button above
+        """)
+        return
+
+    # Extract unique folders from jobs
+    # Track both top-level folders and all folder paths for better filtering
+    top_level_folders = set()
+    all_folder_paths = set()
+
+    for job in jobs:
+        display_name = job.get('display_name', job.get('name', ''))
+
+        # If display_name contains '/', it's in a folder
+        if '/' in display_name:
+            # Get the top-level folder (first part before /)
+            folder_parts = display_name.split('/')
+            top_level_folder = folder_parts[0]
+            top_level_folders.add(top_level_folder)
+
+            # Also track the full folder path (everything except last part which is job name)
+            if len(folder_parts) > 1:
+                full_folder_path = '/'.join(folder_parts[:-1])
+                all_folder_paths.add(full_folder_path)
+
+    # Sort folders alphabetically
+    folders = sorted(list(top_level_folders))
+
+    logger.info(f"Extracted folders: {folders}")
+    logger.info(f"All folder paths: {sorted(list(all_folder_paths))}")
+
+    # Folder selection filter
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        if folders:
+            folder_options = ["All Folders"] + folders
+            selected_folder = st.selectbox(
+                "📁 Filter by Folder",
+                options=folder_options,
+                help="Select a specific Jenkins folder to filter jobs",
+                key="folder_selector"
+            )
+        else:
+            selected_folder = "All Folders"
+            st.info("ℹ️ No folders found - all jobs are at root level")
+
+    # Filter jobs by selected folder
+    if selected_folder == "All Folders":
+        filtered_jobs = jobs
+    else:
+        # Filter jobs whose display_name starts with the selected folder
+        filtered_jobs = [job for job in jobs
+                        if job.get('display_name', job.get('name', '')).startswith(f"{selected_folder}/")]
+
+        logger.info(f"Filtered to {len(filtered_jobs)} jobs in folder '{selected_folder}'")
+
+    # Just show all jobs without filtering or warnings
+    # Users know what jobs they want to analyze
+    rf_jobs = filtered_jobs
+
+    if not rf_jobs:
+        # No jobs at all
+        st.error("❌ No jobs found to analyze")
+        return
+
+    # Create a mapping of display names to job info
+    job_display_names = [job.get('display_name', job['name']) for job in rf_jobs]
+    job_map = {job.get('display_name', job['name']): job for job in rf_jobs}
+
+    # Display job count
+    if selected_folder == "All Folders":
+        st.info(f"📊 Found {len(job_display_names)} job(s) across all folders")
+    else:
+        st.info(f"📊 Found {len(job_display_names)} job(s) in folder '{selected_folder}'")
+
+    selected_job_name = st.selectbox("Select Jenkins Job", job_display_names)
+
+    if not selected_job_name:
+        return
+
+    # Get the full job info
+    selected_job_info = job_map[selected_job_name]
+
+    # Fetch and analyze builds
+    if st.button("🔍 Analyze Test Results", type="primary"):
+        with st.spinner(f"Fetching and analyzing {max_builds} builds from '{selected_job_name}'..."):
+            builds = rf_client.get_job_builds(selected_job_info, max_builds)
+
+            if not builds:
+                st.error(f"❌ No builds found for job: {selected_job_name}")
+                st.markdown("""
+                ### Possible reasons:
+                - Job name might contain special characters causing URL encoding issues
+                - Job might not have any builds yet
+                - You might not have permission to view builds
+                - Check Jenkins logs for more details
+                """)
+                return
+
+            st.success(f"✅ Found {len(builds)} builds for job '{selected_job_name}'")
+
+            # Collect metrics from all builds
+            metrics_list = []
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+
+            # Create a container for detailed logs
+            debug_expander = st.expander("🔍 Debug Information", expanded=False)
+            debug_messages = []
+
+            for idx, build in enumerate(builds):
+                build_number = build['number']
+                status_text.text(f"Processing build #{build_number}... ({idx + 1}/{len(builds)})")
+
+                # Get Robot Framework test results
+                robot_data = rf_client.get_build_test_results(selected_job_info, build_number)
+
+                if robot_data:
+                    debug_messages.append(f"✅ Build #{build_number}: RF data received, keys: {list(robot_data.keys())}")
+                    metrics = analyzer.parse_robot_results(robot_data, build)
+                    metrics_list.append(metrics)
+                    debug_messages.append(f"   → Parsed: {metrics.total_tests} tests, {metrics.passed_tests} passed, {metrics.failed_tests} failed")
+                else:
+                    debug_messages.append(f"❌ Build #{build_number}: No RF results returned")
+                    logger.info(f"No RF results for build #{build_number}")
+
+                progress_bar.progress((idx + 1) / len(builds))
+
+            # Show debug information
+            with debug_expander:
+                st.text("\n".join(debug_messages[-50:]))  # Show last 50 messages
+
+            progress_bar.empty()
+            status_text.empty()
+
+            if not metrics_list:
+                st.error("❌ No Robot Framework test results found in any builds")
+                st.markdown("""
+                ### This job might not have Robot Framework plugin installed or configured.
+                
+                To fix this:
+                1. Ensure Robot Framework plugin is installed in Jenkins
+                2. Configure your job to publish Robot Framework results
+                3. Verify builds have completed successfully with test results
+                
+                ### Debug Information:
+                - Attempted to fetch RF results from {len(builds)} build(s)
+                - Check Jenkins console logs for details
+                - Verify the Robot Framework plugin is publishing results to Jenkins
+                """)
+                return
+
+            # Validate and report what was collected
+            total_tests_found = sum(m.total_tests for m in metrics_list)
+            builds_with_tests = len([m for m in metrics_list if m.total_tests > 0])
+
+            # Store in session state
+            st.session_state.rf_metrics = metrics_list
+            st.session_state.rf_selected_job = selected_job_name
+
+            # Show detailed success message
+            if builds_with_tests == len(metrics_list):
+                st.success(f"🎉 Successfully analyzed {len(metrics_list)} builds with {total_tests_found} total tests!")
+            else:
+                st.warning(f"⚠️ Analyzed {len(metrics_list)} builds, but only {builds_with_tests} had test results ({total_tests_found} total tests)")
+
+            # Show summary of what was found
+            with st.expander("📊 Collection Summary", expanded=False):
+                st.write(f"**Builds analyzed:** {len(metrics_list)}")
+                st.write(f"**Builds with tests:** {builds_with_tests}")
+                st.write(f"**Total tests collected:** {total_tests_found}")
+                st.write(f"**Date range:** {min(m.timestamp for m in metrics_list).strftime('%Y-%m-%d')} to {max(m.timestamp for m in metrics_list).strftime('%Y-%m-%d')}")
+
+                # Show per-build summary
+                summary_data = []
+                for m in metrics_list:
+                    summary_data.append({
+                        'Build': m.build_number,
+                        'Total Tests': m.total_tests,
+                        'Passed': m.passed_tests,
+                        'Failed': m.failed_tests,
+                        'Pass Rate': f"{m.pass_rate:.1f}%"
+                    })
+                st.dataframe(pd.DataFrame(summary_data), use_container_width=True)
+
+    # Display results if available
+    if 'rf_metrics' in st.session_state and st.session_state.rf_metrics:
+        display_analysis_results(st.session_state.rf_metrics, analyzer)
+
+
+def display_analysis_results(metrics_list: List[RFTestMetrics], analyzer: RFDashboardAnalyzer):
+    """Display analysis results with visualizations"""
+
+    st.markdown("---")
+    st.subheader("📈 Analysis Results")
+
+    # Validate data before processing
+    if not metrics_list:
+        st.error("❌ No metrics data available for analysis")
+        return
+
+    # Check if metrics have valid data
+    valid_metrics = [m for m in metrics_list if m.total_tests > 0]
+    if not valid_metrics:
+        st.error("❌ No valid test data found in the collected metrics")
+        st.info("All builds returned 0 tests. This might indicate:")
+        st.markdown("""
+        - Robot Framework plugin not properly configured
+        - Test results not being published
+        - Incorrect job selected
+        """)
+        return
+
+    # Use only valid metrics for analysis
+    if len(valid_metrics) < len(metrics_list):
+        st.warning(f"⚠️ Using {len(valid_metrics)} out of {len(metrics_list)} builds (others had no test data)")
+        metrics_list = valid_metrics
+
+    # Perform trend analysis
+    with st.spinner("Analyzing trends..."):
+        analysis = analyzer.analyze_trends(metrics_list)
+
+    # Validate analysis results
+    if not analysis or analysis.get('total_runs', 0) == 0:
+        st.error("❌ Failed to generate analysis from the collected data")
+        return
+
+    # Display key metrics
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric(
+            "Average Pass Rate",
+            f"{analysis['average_pass_rate']:.1f}%",
+            delta=None
+        )
+
+    with col2:
+        st.metric(
+            "Stability Score",
+            f"{analysis['stability_score']:.1f}",
+            delta=None
+        )
+
+    with col3:
+        trend_emoji = "📈" if analysis['pass_rate_trend'] == 'improving' else "📉" if analysis['pass_rate_trend'] == 'degrading' else "➡️"
+        st.metric(
+            "Pass Rate Trend",
+            trend_emoji,
+            delta=analysis['pass_rate_trend'].title()
+        )
+
+    with col4:
+        st.metric(
+            "Total Runs",
+            analysis['total_runs'],
+            delta=None
+        )
+
+    # Visualizations
+    st.markdown("### 📊 Trends Over Time")
+
+    # Create pass rate trend chart
+    df_metrics = pd.DataFrame([
+        {
+            'Build': m.build_number,
+            'Pass Rate': m.pass_rate,
+            'Execution Time': m.execution_time / 1000,  # Convert to seconds
+            'Total Tests': m.total_tests,
+            'Failed Tests': m.failed_tests,
+            'Date': m.timestamp
+        }
+        for m in metrics_list
+    ])
+
+    # Sort by build number
+    df_metrics = df_metrics.sort_values('Build')
+
+    # Pass rate trend
+    fig_pass_rate = px.line(
+        df_metrics,
+        x='Build',
+        y='Pass Rate',
+        title='Pass Rate Trend',
+        markers=True
+    )
+    fig_pass_rate.add_hline(y=95, line_dash="dash", line_color="green", annotation_text="Target: 95%")
+    st.plotly_chart(fig_pass_rate, use_container_width=True)
+
+    # Execution time trend
+    col1, col2 = st.columns(2)
+
+    with col1:
+        fig_exec_time = px.line(
+            df_metrics,
+            x='Build',
+            y='Execution Time',
+            title='Execution Time Trend (seconds)',
+            markers=True
+        )
+        st.plotly_chart(fig_exec_time, use_container_width=True)
+
+    with col2:
+        fig_failed = px.bar(
+            df_metrics,
+            x='Build',
+            y='Failed Tests',
+            title='Failed Tests per Build',
+            color='Failed Tests',
+            color_continuous_scale='Reds'
+        )
+        st.plotly_chart(fig_failed, use_container_width=True)
+
+    # Most failed tests
+    st.markdown("### ❌ Most Failed Tests")
+    if analysis['most_failed_tests']:
+        df_failed = pd.DataFrame(analysis['most_failed_tests'])
+        st.dataframe(
+            df_failed[['test', 'failure_count', 'failure_rate']],
+            use_container_width=True
+        )
+
+        # Visualize
+        fig_top_failures = px.bar(
+            df_failed.head(10),
+            x='failure_count',
+            y='test',
+            orientation='h',
+            title='Top 10 Frequently Failing Tests',
+            labels={'failure_count': 'Failures', 'test': 'Test Name'}
+        )
+        st.plotly_chart(fig_top_failures, use_container_width=True)
+    else:
+        st.success("No frequently failing tests detected!")
+
+    # Flaky tests
+    st.markdown("### 🔄 Flaky Tests")
+    if analysis['flaky_tests']:
+        df_flaky = pd.DataFrame(analysis['flaky_tests'])
+        st.dataframe(
+            df_flaky[['test', 'flakiness_score', 'passes', 'fails']],
+            use_container_width=True
+        )
+
+        st.warning(f"⚠️ {len(analysis['flaky_tests'])} flaky tests detected. These need immediate attention!")
+    else:
+        st.success("No flaky tests detected!")
+
+    # Slowest tests
+    st.markdown("### 🐌 Slowest Tests")
+    if analysis['slowest_tests']:
+        df_slow = pd.DataFrame(analysis['slowest_tests'])
+        df_slow['avg_duration_sec'] = df_slow['avg_duration'] / 1000
+
+        fig_slow = px.bar(
+            df_slow.head(10),
+            x='avg_duration_sec',
+            y='test',
+            orientation='h',
+            title='Top 10 Slowest Tests (seconds)',
+            labels={'avg_duration_sec': 'Duration (seconds)', 'test': 'Test Name'}
+        )
+        st.plotly_chart(fig_slow, use_container_width=True)
+
+    # AI Insights
+    st.markdown("### 🤖 AI-Powered Insights")
+
+    if st.button("Generate AI Insights", type="primary"):
+        with st.spinner("Generating AI insights..."):
+            insights = analyzer.generate_ai_insights(analysis)
+
+            # Store in session state
+            st.session_state.rf_insights = insights
+
+    # Display insights if available
+    if 'rf_insights' in st.session_state:
+        insights = st.session_state.rf_insights
+
+        # Executive Summary
+        st.markdown("#### 📋 Executive Summary")
+        st.info(insights.get('executive_summary', 'No summary available'))
+
+        # Key Concerns
+        st.markdown("#### ⚠️ Key Concerns")
+        concerns = insights.get('key_concerns', [])
+        for concern in concerns:
+            st.warning(f"• {concern}")
+
+        # Recommendations
+        st.markdown("#### 💡 Recommendations")
+        recommendations = insights.get('recommendations', [])
+        for rec in recommendations:
+            st.success(f"• {rec}")
+
+        # Predicted Impact
+        if insights.get('predicted_impact'):
+            st.markdown("#### 🔮 Predicted Impact")
+            st.error(insights['predicted_impact'])
+
+        # Success Indicators
+        st.markdown("#### ✅ Success Indicators")
+        indicators = insights.get('success_indicators', [])
+        for indicator in indicators:
+            st.markdown(f"• {indicator}")
+
+    # Export options
+    st.markdown("---")
+    st.subheader("📥 Export Results")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        if st.button("Export as CSV"):
+            csv = df_metrics.to_csv(index=False)
+            st.download_button(
+                label="Download CSV",
+                data=csv,
+                file_name=f"rf_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
+
+    with col2:
+        if st.button("Export Analysis Report"):
+            report = create_analysis_report(analysis, st.session_state.get('rf_insights', {}))
+            st.download_button(
+                label="Download Report",
+                data=report,
+                file_name=f"rf_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                mime="application/json"
+            )
+
+    with col3:
+        if st.button("Send Notification"):
+            if NOTIFICATIONS_AVAILABLE:
+                notifications.add_notification(
+                    module_name="rf_dashboard_analytics",
+                    status="success",
+                    message=f"RF Dashboard Analysis completed for {st.session_state.get('rf_selected_job', 'job')}",
+                    details=f"Analyzed {analysis['total_runs']} builds with {analysis['average_pass_rate']:.1f}% average pass rate"
+                )
+                st.success("Notification sent!")
+            else:
+                st.warning("Notifications not available")
+
+
+def create_analysis_report(analysis: Dict[str, Any], insights: Dict[str, Any]) -> str:
+    """Create a comprehensive analysis report"""
+    report = {
+        'timestamp': datetime.now().isoformat(),
+        'analysis': analysis,
+        'ai_insights': insights,
+        'summary': {
+            'total_runs': analysis['total_runs'],
+            'average_pass_rate': analysis['average_pass_rate'],
+            'stability_score': analysis['stability_score'],
+            'trends': {
+                'pass_rate': analysis['pass_rate_trend'],
+                'execution_time': analysis['execution_time_trend']
+            }
+        }
+    }
+
+    return json.dumps(report, indent=2)
+
+
+# Wrapper function for main_ui.py integration
+def show_ui():
+    """Main UI entry point called by main_ui.py"""
+    show_rf_dashboard_analytics()
+
+
+# Main entry point
+if __name__ == "__main__":
+    show_rf_dashboard_analytics()
+

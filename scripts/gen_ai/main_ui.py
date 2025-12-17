@@ -1372,6 +1372,7 @@ def get_module_friendly_name(module_id):
         "pull_requests_reviewer": "Pull Requests Reviewer",
         "database_insights": "Database Insights",
         "jenkins_dashboard": "Jenkins Dashboard",
+        "rf_dashboard_analytics": "RF Dashboard Analytics",
         "fos_checks": "FOS Quality Checks",
         "intelligent_bug_predictor": "AI Bug Predictor",
         "smart_test_optimizer": "Smart Test Optimizer",
@@ -1577,6 +1578,7 @@ use_cases = {
     "Pull Requests Reviewer": "pull_requests_reviewer",
     "Database Insights": "database_insights",
     "Jenkins Dashboard": "jenkins_dashboard",
+    "RF Dashboard Analytics": "rf_dashboard_analytics",
     "FOS Quality Checks": "fos_checks",
     # Advanced AI-Powered Use Cases
     "AI Bug Predictor": "intelligent_bug_predictor",
@@ -1764,6 +1766,7 @@ with st.container():
                     "pull_requests_reviewer": "AI-powered review of pull requests for code quality and compliance.",
                     "database_insights": "Intelligent insights and optimization suggestions for database performance.",
                     "jenkins_dashboard": "Integration with Jenkins for CI/CD pipeline monitoring and management.",
+                    "rf_dashboard_analytics": "Robot Framework Dashboard Analytics - AI-powered insights from Jenkins test results with trend analysis, failure prediction, and optimization recommendations.",
                     "fos_checks": "Quality checks for FOS projects",
                     "intelligent_bug_predictor": "AI-powered bug prediction and analysis",
                     "smart_test_optimizer": "AI-driven test optimization and flakiness detection",
@@ -1847,6 +1850,7 @@ with st.container():
                 "pull_requests_reviewer": "AI-powered review of pull requests for code quality and compliance.",
                 "database_insights": "Intelligent insights and optimization suggestions for database performance.",
                 "jenkins_dashboard": "Integration with Jenkins for CI/CD pipeline monitoring and management.",
+                "rf_dashboard_analytics": "Robot Framework Dashboard Analytics - AI-powered insights from Jenkins test results with trend analysis, failure prediction, and optimization recommendations.",
                 "fos_checks": "Quality checks for FOS projects",
                 "intelligent_bug_predictor": "AI-powered bug prediction and analysis",
                 "smart_test_optimizer": "AI-driven test optimization and flakiness detection",
@@ -1897,6 +1901,7 @@ with st.container():
 
         ### 📊 DevOps & Monitoring
         - **Jenkins Dashboard**: Integration with Jenkins for CI/CD pipeline monitoring
+        - **RF Dashboard Analytics**: AI-powered Robot Framework test insights from Jenkins with trend analysis, failure prediction, and optimization recommendations
         - **Pull Requests Reviewer**: AI-powered review of pull requests for code quality
         - **Database Insights**: Intelligent insights and optimization for database performance
         - **AI Environment Manager**: Smart test environment provisioning and data management

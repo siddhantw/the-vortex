@@ -1,0 +1,2 @@
+date,timestamp,name,url,device_mode,grade,score,fcp,lcp,cls,inp,ttfb,tbt,tti,speed_index,performance_score,accessibility_score,best_practices_score,seo_score,core_web_vitals_score
+2025-07-07,2025-07-07T18:08:06.893179,https://www.google.com,https://www.google.com,desktop,A,100.0,0.863712,1.9226319999999997,0,N/A,0.16542099999999998,0,1.922632,0.863712,90.0,99.0,96.0,92.0,100.0

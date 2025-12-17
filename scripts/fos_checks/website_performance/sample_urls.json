@@ -1,0 +1,22 @@
+[
+  {
+    "url": "https://www.example.com",
+    "name": "Example Website"
+  },
+  {
+    "url": "https://www.test.com",
+    "name": "Test Site"
+  },
+  {
+    "url": "https://www.demo.org",
+    "name": "Demo Organization"
+  },
+  {
+    "url": "https://www.performance-test.net",
+    "name": "Performance Test Site"
+  },
+  {
+    "url": "https://www.speed-check.io",
+    "name": "Speed Check Tool"
+  }
+]

@@ -1,0 +1,19 @@
+# Sample URLs for Performance Testing
+# Lines starting with # are comments and will be ignored
+
+https://www.bluehost.com/my-account/login
+https://www.bluehost.com/
+https://www.bluehost.com/domains
+https://www.bluehost.com/special/web-hosting
+https://www.bluehost.com/blog/how-much-does-tiktok-pay/
+https://www.bluehost.com/special/homenew
+https://www.bluehost.com/affiliates
+http://bluehost.com/blog/how-to-make-ai-content-undetectable
+https://www.bluehost.com/fr
+https://www.bluehost.ca/
+https://www.bluehost.com/products/web-hosting/domain-search
+https://www.bluehost.com/special/web-hosting
+https://www.bluehost.com/hosting/shared
+https://www.bluehost.com/pricing
+https://www.bluehost.com/help
+https://www.bluehost.com/help/article/webmail-access

@@ -20,13 +20,15 @@ import os
 import sys
 import json
 import time
-import asyncio
 import re
-from datetime import datetime
-from typing import List, Dict, Any, Optional, Tuple
+from datetime import datetime, timedelta
+from typing import List, Dict, Any, Optional, Tuple, Set
 from dataclasses import dataclass, field
 import base64
 import atexit
+from collections import defaultdict, Counter
+import hashlib
+from pathlib import Path
 
 # Ensure streamlit compatibility
 try:
@@ -52,42 +54,93 @@ for dir_path in [GEN_AI_DIR, SCRIPTS_DIR, ROOT_DIR]:
     if dir_path not in sys.path:
         sys.path.insert(0, dir_path)
 
+# Configure logging FIRST before it's used
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(levelname)-8s | %(name)s | %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger('TestPilot')
+
 # Import required modules
 AZURE_AVAILABLE = False
+AzureOpenAIClient = None
 try:
-    from azure_openai_client import AzureOpenAIClient
+    from azure_openai_client import AzureOpenAIClient as _AzureOpenAIClient
+    AzureOpenAIClient = _AzureOpenAIClient
     AZURE_AVAILABLE = True
+    logger.info("✅ Azure OpenAI Client loaded successfully")
 except ImportError:
     try:
-        from gen_ai.azure_openai_client import AzureOpenAIClient
+        from gen_ai.azure_openai_client import AzureOpenAIClient as _AzureOpenAIClient
+        AzureOpenAIClient = _AzureOpenAIClient
         AZURE_AVAILABLE = True
+        logger.info("✅ Azure OpenAI Client loaded successfully (alternate path)")
     except ImportError:
+        logger.warning("⚠️ Azure OpenAI Client not available - AI features will be disabled")
+        # Fallback is already set to None above
         pass
 
 ROBOT_WRITER_AVAILABLE = False
+RobotWriter = None
 try:
-    from robot_writer.robot_writer import RobotWriter
+    from robot_writer.robot_writer import RobotWriter as _RobotWriter
+    RobotWriter = _RobotWriter
     ROBOT_WRITER_AVAILABLE = True
 except ImportError:
     try:
-        from gen_ai.robot_writer.robot_writer import RobotWriter
+        from gen_ai.robot_writer.robot_writer import RobotWriter as _RobotWriter
+        RobotWriter = _RobotWriter
         ROBOT_WRITER_AVAILABLE = True
     except ImportError:
+        # Fallback is already set to None above
         pass
 
 NOTIFICATIONS_AVAILABLE = False
+notifications = None
 try:
-    import notifications
+    import notifications as _notifications
+    notifications = _notifications
     NOTIFICATIONS_AVAILABLE = True
 except ImportError:
+    # Fallback is already set to None above
     pass
 
-# Configure logging FIRST before using logger
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger("TestPilot")
+# Brand Knowledge Base imports
+BRAND_KNOWLEDGE_AVAILABLE = False
+detect_brand_from_url = None
+get_brand_knowledge = None
+get_brand_specific_selector = None
+get_brand_ai_prompt_enhancement = None
+try:
+    from brand_knowledge_base import (
+        detect_brand_from_url as _detect_brand_from_url,
+        get_brand_knowledge as _get_brand_knowledge,
+        get_brand_specific_selector as _get_brand_specific_selector,
+        get_brand_ai_prompt_enhancement as _get_brand_ai_prompt_enhancement
+    )
+    detect_brand_from_url = _detect_brand_from_url
+    get_brand_knowledge = _get_brand_knowledge
+    get_brand_specific_selector = _get_brand_specific_selector
+    get_brand_ai_prompt_enhancement = _get_brand_ai_prompt_enhancement
+    BRAND_KNOWLEDGE_AVAILABLE = True
+except ImportError:
+    try:
+        from gen_ai.use_cases.brand_knowledge_base import (
+            detect_brand_from_url as _detect_brand_from_url,
+            get_brand_knowledge as _get_brand_knowledge,
+            get_brand_specific_selector as _get_brand_specific_selector,
+            get_brand_ai_prompt_enhancement as _get_brand_ai_prompt_enhancement
+        )
+        detect_brand_from_url = _detect_brand_from_url
+        get_brand_knowledge = _get_brand_knowledge
+        get_brand_specific_selector = _get_brand_specific_selector
+        get_brand_ai_prompt_enhancement = _get_brand_ai_prompt_enhancement
+        BRAND_KNOWLEDGE_AVAILABLE = True
+    except ImportError:
+        # Fallbacks are already set to None above
+        pass
+
 
 # Suppress warnings
 import warnings
@@ -244,6 +297,634 @@ class TestCase:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class PageElement:
+    """Represents a UI element in the application map"""
+    id: str
+    name: str
+    locator: str
+    locator_type: str  # xpath, css, id, etc.
+    page: str
+    actions: List[str] = field(default_factory=list)  # click, input, verify, etc.
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    confidence_score: float = 1.0  # Resilience indicator
+    last_seen: str = field(default_factory=lambda: datetime.now().isoformat())
+    interaction_count: int = 0
+    failure_count: int = 0  # Track failures for flaky element detection
+
+
+@dataclass
+class AppPage:
+    """Represents a page/screen in the application"""
+    name: str
+    url_pattern: str = ""
+    elements: Dict[str, PageElement] = field(default_factory=dict)
+    transitions: List[str] = field(default_factory=list)  # Pages that can be navigated to
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    visit_count: int = 0
+    last_updated: str = field(default_factory=lambda: datetime.now().isoformat())
+
+
+class AppMap:
+    """
+    Automatic Application Map Generator
+
+    Creates and maintains a dynamic map of the application by learning from:
+    - Test execution interactions
+    - User recordings
+    - Manual test steps
+    - AI-powered pattern recognition
+
+    Features:
+    - Auto-discovery of UI elements
+    - Smart locator suggestions with resilience scoring
+    - Page transition tracking
+    - Flaky element detection
+    - Distributed map synchronization support
+    """
+
+    def __init__(self, app_name: str = "default"):
+        self.app_name = app_name
+        self.pages: Dict[str, AppPage] = {}
+        self.map_file = os.path.join(ROOT_DIR, 'generated_tests', 'app_maps', f'{app_name}_map.json')
+        os.makedirs(os.path.dirname(self.map_file), exist_ok=True)
+        self.load_map()
+        logger.info(f"📍 AppMap initialized for {app_name} with {len(self.pages)} pages")
+
+    def load_map(self):
+        """Load existing app map from file"""
+        try:
+            if os.path.exists(self.map_file):
+                with open(self.map_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    for page_name, page_data in data.get('pages', {}).items():
+                        elements = {}
+                        for elem_id, elem_data in page_data.get('elements', {}).items():
+                            elements[elem_id] = PageElement(**elem_data)
+                        self.pages[page_name] = AppPage(
+                            name=page_data['name'],
+                            url_pattern=page_data.get('url_pattern', ''),
+                            elements=elements,
+                            transitions=page_data.get('transitions', []),
+                            metadata=page_data.get('metadata', {}),
+                            visit_count=page_data.get('visit_count', 0),
+                            last_updated=page_data.get('last_updated', datetime.now().isoformat())
+                        )
+                logger.info(f"✅ Loaded app map with {len(self.pages)} pages")
+        except Exception as e:
+            logger.warning(f"Could not load app map: {e}")
+
+    def save_map(self):
+        """Save app map to file"""
+        try:
+            data = {
+                'app_name': self.app_name,
+                'last_updated': datetime.now().isoformat(),
+                'pages': {}
+            }
+
+            for page_name, page in self.pages.items():
+                elements_data = {}
+                for elem_id, elem in page.elements.items():
+                    elements_data[elem_id] = {
+                        'id': elem.id,
+                        'name': elem.name,
+                        'locator': elem.locator,
+                        'locator_type': elem.locator_type,
+                        'page': elem.page,
+                        'actions': elem.actions,
+                        'metadata': elem.metadata,
+                        'confidence_score': elem.confidence_score,
+                        'last_seen': elem.last_seen,
+                        'interaction_count': elem.interaction_count,
+                        'failure_count': elem.failure_count
+                    }
+
+                data['pages'][page_name] = {
+                    'name': page.name,
+                    'url_pattern': page.url_pattern,
+                    'elements': elements_data,
+                    'transitions': page.transitions,
+                    'metadata': page.metadata,
+                    'visit_count': page.visit_count,
+                    'last_updated': page.last_updated
+                }
+
+            with open(self.map_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2)
+            logger.debug(f"💾 Saved app map to {self.map_file}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save app map: {e}")
+            return False
+
+    def learn_from_step(self, step: TestStep, page_name: str = "UnknownPage"):
+        """Learn and update app map from a test step"""
+        try:
+            # Ensure page exists
+            if page_name not in self.pages:
+                self.pages[page_name] = AppPage(name=page_name)
+
+            page = self.pages[page_name]
+            page.visit_count += 1
+            page.last_updated = datetime.now().isoformat()
+
+            # Extract element information from step
+            if step.target:
+                element_id = self._generate_element_id(step.target, page_name)
+
+                if element_id in page.elements:
+                    # Update existing element
+                    elem = page.elements[element_id]
+                    elem.interaction_count += 1
+                    elem.last_seen = datetime.now().isoformat()
+                    if step.action and step.action not in elem.actions:
+                        elem.actions.append(step.action)
+                else:
+                    # Create new element
+                    locator, locator_type = self._infer_locator_info(step.target, step.description)
+                    page.elements[element_id] = PageElement(
+                        id=element_id,
+                        name=self._infer_element_name(step.description),
+                        locator=locator,
+                        locator_type=locator_type,
+                        page=page_name,
+                        actions=[step.action] if step.action else [],
+                        metadata={'description': step.description}
+                    )
+
+            self.save_map()
+        except Exception as e:
+            logger.error(f"Error learning from step: {e}")
+
+    def record_element_failure(self, element_id: str, page_name: str):
+        """Record element interaction failure for flaky detection"""
+        try:
+            if page_name in self.pages and element_id in self.pages[page_name].elements:
+                elem = self.pages[page_name].elements[element_id]
+                elem.failure_count += 1
+                # Calculate confidence score (resilience indicator)
+                if elem.interaction_count > 0:
+                    elem.confidence_score = 1 - (elem.failure_count / elem.interaction_count)
+                self.save_map()
+
+                # Flaky element detection
+                if elem.failure_count > 2 and elem.confidence_score < 0.7:
+                    logger.warning(f"🔄 Flaky element detected: {elem.name} (confidence: {elem.confidence_score:.2f})")
+                    return True
+        except Exception as e:
+            logger.error(f"Error recording failure: {e}")
+        return False
+
+    def get_element_suggestions(self, description: str, page_name: str = None) -> List[PageElement]:
+        """Get smart element suggestions based on description using AI"""
+        suggestions = []
+        try:
+            # Search across all pages or specific page
+            pages_to_search = [self.pages[page_name]] if page_name and page_name in self.pages else self.pages.values()
+
+            desc_lower = description.lower()
+            for page in pages_to_search:
+                for elem in page.elements.values():
+                    # Simple matching - can be enhanced with AI
+                    if (elem.name.lower() in desc_lower or
+                        desc_lower in elem.name.lower() or
+                        any(action in desc_lower for action in elem.actions)):
+                        suggestions.append(elem)
+
+            # Sort by confidence score and interaction count
+            suggestions.sort(key=lambda x: (x.confidence_score, x.interaction_count), reverse=True)
+        except Exception as e:
+            logger.error(f"Error getting element suggestions: {e}")
+
+        return suggestions[:5]  # Return top 5
+
+    def get_resilience_report(self) -> Dict[str, Any]:
+        """Generate resilience report for all elements"""
+        report = {
+            'total_pages': len(self.pages),
+            'total_elements': 0,
+            'flaky_elements': [],
+            'stable_elements': [],
+            'avg_confidence': 0,
+            'pages': {}
+        }
+
+        all_confidences = []
+        for page_name, page in self.pages.items():
+            page_report = {
+                'element_count': len(page.elements),
+                'flaky_count': 0,
+                'stable_count': 0
+            }
+
+            for elem in page.elements.values():
+                report['total_elements'] += 1
+                all_confidences.append(elem.confidence_score)
+
+                if elem.confidence_score < 0.7 and elem.interaction_count > 2:
+                    page_report['flaky_count'] += 1
+                    report['flaky_elements'].append({
+                        'page': page_name,
+                        'element': elem.name,
+                        'confidence': elem.confidence_score,
+                        'failures': elem.failure_count,
+                        'interactions': elem.interaction_count
+                    })
+                elif elem.confidence_score >= 0.95:
+                    page_report['stable_count'] += 1
+                    report['stable_elements'].append({
+                        'page': page_name,
+                        'element': elem.name,
+                        'confidence': elem.confidence_score
+                    })
+
+            report['pages'][page_name] = page_report
+
+        if all_confidences:
+            report['avg_confidence'] = sum(all_confidences) / len(all_confidences)
+
+        return report
+
+    def _generate_element_id(self, target: str, page: str) -> str:
+        """Generate unique element ID"""
+        import hashlib
+        return hashlib.md5(f"{page}:{target}".encode()).hexdigest()[:16]
+
+    def _infer_locator_info(self, target: str, description: str) -> Tuple[str, str]:
+        """Infer locator and type from target and description"""
+        # Default
+        locator = target
+        locator_type = "auto"
+
+        # Try to determine type
+        if target.startswith('//') or target.startswith('(//'):
+            locator_type = "xpath"
+        elif target.startswith('#'):
+            locator_type = "css"
+            locator = target
+        elif target.startswith('.'):
+            locator_type = "css"
+            locator = target
+        elif 'id=' in target.lower():
+            locator_type = "id"
+            locator = target.split('=')[1] if '=' in target else target
+
+        return locator, locator_type
+
+    def _infer_element_name(self, description: str) -> str:
+        """Infer element name from description"""
+        # Extract key terms
+        desc_lower = description.lower()
+
+        if 'button' in desc_lower:
+            return description.split('button')[0].strip().title() + ' Button'
+        elif 'link' in desc_lower:
+            return description.split('link')[0].strip().title() + ' Link'
+        elif 'input' in desc_lower or 'field' in desc_lower:
+            return description.split(' ')[0].title() + ' Input'
+        elif 'click' in desc_lower:
+            words = description.split()
+            if len(words) > 1:
+                return ' '.join(words[1:3]).title()
+
+        return description[:50]  # Default to truncated description
+
+    def export_to_page_objects(self, output_dir: str = None) -> bool:
+        """Export app map as Page Object Model files"""
+        try:
+            if not output_dir:
+                output_dir = os.path.join(ROOT_DIR, 'generated_tests', 'page_objects', self.app_name)
+
+            os.makedirs(output_dir, exist_ok=True)
+
+            for page_name, page in self.pages.items():
+                # Generate Python Page Object file
+                file_path = os.path.join(output_dir, f"{page_name.lower()}_page.py")
+
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(f'"""\nPage Object for {page_name}\nAuto-generated by TestPilot AppMap\n"""\n\n')
+                    f.write('from selenium.webdriver.common.by import By\n\n')
+                    f.write(f'class {page_name.replace(" ", "")}Page:\n')
+                    f.write(f'    """Page Object for {page_name}"""\n\n')
+
+                    # Add locators
+                    for elem in page.elements.values():
+                        var_name = elem.name.upper().replace(' ', '_')
+                        by_type = self._get_selenium_by_type(elem.locator_type)
+                        f.write(f'    {var_name} = ({by_type}, "{elem.locator}")\n')
+
+                logger.info(f"✅ Generated Page Object: {file_path}")
+
+            return True
+        except Exception as e:
+            logger.error(f"Failed to export page objects: {e}")
+            return False
+
+    def _get_selenium_by_type(self, locator_type: str) -> str:
+        """Convert locator type to Selenium By constant"""
+        mapping = {
+            'xpath': 'By.XPATH',
+            'css': 'By.CSS_SELECTOR',
+            'id': 'By.ID',
+            'name': 'By.NAME',
+            'class': 'By.CLASS_NAME',
+            'tag': 'By.TAG_NAME',
+            'link': 'By.LINK_TEXT',
+            'partial_link': 'By.PARTIAL_LINK_TEXT'
+        }
+        return mapping.get(locator_type.lower(), 'By.XPATH')
+
+
+class DistributedTestNetwork:
+    """
+    Distributed Test Network for Decentralized, User-Powered Testing
+
+    Enables:
+    - Peer-to-peer test execution
+    - Distributed app map synchronization
+    - Crowd-sourced resilience data
+    - Network-wide flaky test detection
+    - Shared learning across test environments
+    """
+
+    def __init__(self, node_id: str = None, network_config: Dict[str, Any] = None):
+        self.node_id = node_id or self._generate_node_id()
+        self.network_config = network_config or self._load_network_config()
+        self.peers: Dict[str, Dict] = {}
+        self.shared_data_dir = os.path.join(ROOT_DIR, 'generated_tests', 'distributed_network')
+        os.makedirs(self.shared_data_dir, exist_ok=True)
+        logger.info(f"🌐 Distributed Test Network initialized (Node: {self.node_id})")
+
+    def _generate_node_id(self) -> str:
+        """Generate unique node ID for this test environment"""
+        import uuid
+        import platform
+        node_id = f"{platform.node()}_{uuid.uuid4().hex[:8]}"
+        return node_id
+
+    def _load_network_config(self) -> Dict[str, Any]:
+        """Load network configuration"""
+        config_file = os.path.join(ROOT_DIR, 'network_config.json')
+        if os.path.exists(config_file):
+            try:
+                with open(config_file, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.warning(f"Could not load network config: {e}")
+
+        # Default configuration
+        return {
+            'enabled': False,
+            'sync_interval': 300,  # 5 minutes
+            'peers': [],
+            'sync_app_maps': True,
+            'sync_resilience_data': True,
+            'sync_test_results': True
+        }
+
+    def register_peer(self, peer_id: str, peer_info: Dict[str, Any]):
+        """Register a peer node in the network"""
+        self.peers[peer_id] = {
+            **peer_info,
+            'registered_at': datetime.now().isoformat(),
+            'last_sync': None
+        }
+        logger.info(f"🤝 Registered peer: {peer_id}")
+
+    def sync_app_map(self, app_map: AppMap) -> bool:
+        """Synchronize app map with network peers"""
+        try:
+            if not self.network_config.get('sync_app_maps', False):
+                return False
+
+            # Export app map data
+            map_data = {
+                'node_id': self.node_id,
+                'app_name': app_map.app_name,
+                'timestamp': datetime.now().isoformat(),
+                'pages': {}
+            }
+
+            for page_name, page in app_map.pages.items():
+                map_data['pages'][page_name] = {
+                    'name': page.name,
+                    'url_pattern': page.url_pattern,
+                    'visit_count': page.visit_count,
+                    'elements': {}
+                }
+
+                for elem_id, elem in page.elements.items():
+                    map_data['pages'][page_name]['elements'][elem_id] = {
+                        'name': elem.name,
+                        'locator': elem.locator,
+                        'locator_type': elem.locator_type,
+                        'confidence_score': elem.confidence_score,
+                        'interaction_count': elem.interaction_count,
+                        'failure_count': elem.failure_count
+                    }
+
+            # Save to shared directory
+            sync_file = os.path.join(
+                self.shared_data_dir,
+                f"{self.node_id}_{app_map.app_name}_map.json"
+            )
+            with open(sync_file, 'w', encoding='utf-8') as f:
+                json.dump(map_data, f, indent=2)
+
+            logger.info(f"📤 App map synced to network: {sync_file}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to sync app map: {e}")
+            return False
+
+    def merge_app_maps(self, local_map: AppMap) -> AppMap:
+        """Merge app maps from network peers into local map"""
+        try:
+            if not self.network_config.get('sync_app_maps', False):
+                return local_map
+
+            # Find all peer app maps
+            peer_maps = []
+            for file in os.listdir(self.shared_data_dir):
+                if file.endswith('_map.json') and not file.startswith(self.node_id):
+                    try:
+                        with open(os.path.join(self.shared_data_dir, file), 'r') as f:
+                            peer_maps.append(json.load(f))
+                    except Exception as e:
+                        logger.debug(f"Could not load peer map {file}: {e}")
+
+            if not peer_maps:
+                return local_map
+
+            # Merge logic: aggregate resilience data
+            for peer_map in peer_maps:
+                for page_name, page_data in peer_map.get('pages', {}).items():
+                    # Create page if doesn't exist
+                    if page_name not in local_map.pages:
+                        local_map.pages[page_name] = AppPage(
+                            name=page_name,
+                            url_pattern=page_data.get('url_pattern', '')
+                        )
+
+                    local_page = local_map.pages[page_name]
+
+                    # Merge elements
+                    for elem_id, elem_data in page_data.get('elements', {}).items():
+                        if elem_id in local_page.elements:
+                            # Aggregate resilience data from multiple sources
+                            local_elem = local_page.elements[elem_id]
+
+                            # Weighted average of confidence scores
+                            total_interactions = local_elem.interaction_count + elem_data.get('interaction_count', 0)
+                            if total_interactions > 0:
+                                local_elem.confidence_score = (
+                                    (local_elem.confidence_score * local_elem.interaction_count +
+                                     elem_data.get('confidence_score', 1.0) * elem_data.get('interaction_count', 0))
+                                    / total_interactions
+                                )
+
+                            local_elem.interaction_count += elem_data.get('interaction_count', 0)
+                            local_elem.failure_count += elem_data.get('failure_count', 0)
+                        else:
+                            # Add new element from peer
+                            local_page.elements[elem_id] = PageElement(
+                                id=elem_id,
+                                name=elem_data['name'],
+                                locator=elem_data['locator'],
+                                locator_type=elem_data['locator_type'],
+                                page=page_name,
+                                confidence_score=elem_data.get('confidence_score', 1.0),
+                                interaction_count=elem_data.get('interaction_count', 0),
+                                failure_count=elem_data.get('failure_count', 0),
+                                metadata={'source': 'network_peer'}
+                            )
+
+            local_map.save_map()
+            logger.info(f"✅ Merged app maps from {len(peer_maps)} network peers")
+            return local_map
+
+        except Exception as e:
+            logger.error(f"Failed to merge app maps: {e}")
+            return local_map
+
+    def report_flaky_test(self, test_name: str, failure_details: Dict[str, Any]):
+        """Report flaky test to network for crowd-sourced detection"""
+        try:
+            report_file = os.path.join(
+                self.shared_data_dir,
+                f"flaky_reports_{datetime.now().strftime('%Y%m')}.jsonl"
+            )
+
+            report = {
+                'node_id': self.node_id,
+                'timestamp': datetime.now().isoformat(),
+                'test_name': test_name,
+                'failure_details': failure_details
+            }
+
+            with open(report_file, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(report) + '\n')
+
+            logger.info(f"📊 Reported flaky test to network: {test_name}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to report flaky test: {e}")
+            return False
+
+    def get_network_flaky_tests(self, days: int = 30) -> List[Dict[str, Any]]:
+        """Get flaky tests reported by network peers"""
+        try:
+            cutoff_date = datetime.now() - timedelta(days=days)
+            flaky_tests = []
+
+            # Read all flaky report files
+            for file in os.listdir(self.shared_data_dir):
+                if file.startswith('flaky_reports_') and file.endswith('.jsonl'):
+                    try:
+                        with open(os.path.join(self.shared_data_dir, file), 'r') as f:
+                            for line in f:
+                                report = json.loads(line.strip())
+                                report_time = datetime.fromisoformat(report['timestamp'])
+                                if report_time >= cutoff_date:
+                                    flaky_tests.append(report)
+                    except Exception as e:
+                        logger.debug(f"Could not read flaky report {file}: {e}")
+
+            # Aggregate by test name
+            test_stats = {}
+            for report in flaky_tests:
+                test_name = report['test_name']
+                if test_name not in test_stats:
+                    test_stats[test_name] = {
+                        'test_name': test_name,
+                        'failure_count': 0,
+                        'nodes_affected': set(),
+                        'latest_failure': report['timestamp']
+                    }
+
+                test_stats[test_name]['failure_count'] += 1
+                test_stats[test_name]['nodes_affected'].add(report['node_id'])
+                test_stats[test_name]['latest_failure'] = max(
+                    test_stats[test_name]['latest_failure'],
+                    report['timestamp']
+                )
+
+            # Convert to list and sort by failure count
+            result = []
+            for test_name, stats in test_stats.items():
+                result.append({
+                    'test_name': test_name,
+                    'failure_count': stats['failure_count'],
+                    'nodes_affected': len(stats['nodes_affected']),
+                    'latest_failure': stats['latest_failure'],
+                    'is_widespread': len(stats['nodes_affected']) > 1
+                })
+
+            result.sort(key=lambda x: x['failure_count'], reverse=True)
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to get network flaky tests: {e}")
+            return []
+
+    def get_network_health(self) -> Dict[str, Any]:
+        """Get overall network health metrics"""
+        try:
+            health = {
+                'node_id': self.node_id,
+                'total_peers': len(self.peers),
+                'active_peers': 0,
+                'last_sync': None,
+                'total_shared_maps': 0,
+                'total_flaky_reports': 0,
+                'network_enabled': self.network_config.get('enabled', False)
+            }
+
+            # Count active peers (synced in last hour)
+            one_hour_ago = datetime.now() - timedelta(hours=1)
+            for peer in self.peers.values():
+                if peer.get('last_sync'):
+                    last_sync = datetime.fromisoformat(peer['last_sync'])
+                    if last_sync >= one_hour_ago:
+                        health['active_peers'] += 1
+
+            # Count shared maps
+            for file in os.listdir(self.shared_data_dir):
+                if file.endswith('_map.json'):
+                    health['total_shared_maps'] += 1
+                elif file.startswith('flaky_reports_'):
+                    health['total_flaky_reports'] += 1
+
+            return health
+
+        except Exception as e:
+            logger.error(f"Failed to get network health: {e}")
+            return {}
+
+
 class JiraZephyrIntegration:
     """Handles integration with Jira and Zephyr for fetching test cases"""
 
@@ -273,6 +954,58 @@ class JiraZephyrIntegration:
 
         self.base_url = ""
         self.authenticated = False
+
+    @staticmethod
+    def _clean_html(text: str) -> str:
+        """Clean HTML tags and entities from text fields"""
+        if not text or not isinstance(text, str):
+            return text
+
+        import html as html_lib
+
+        # Unescape HTML entities first
+        text = html_lib.unescape(text)
+
+        # Remove HTML tags
+        text = re.sub(r'<[^>]+>', '', text)
+
+        # Remove extra whitespace
+        text = re.sub(r'\s+', ' ', text)
+
+        # Remove common HTML artifacts
+        text = re.sub(r'&nbsp;', ' ', text)
+        text = re.sub(r'&[a-z]+;', '', text)
+
+        return text.strip()
+
+    @staticmethod
+    def _is_placeholder(value: str) -> bool:
+        """Check if a value is a placeholder (N/A, null, etc.)"""
+        if not value or not isinstance(value, str):
+            return True
+
+        value_lower = value.strip().lower()
+        placeholders = ['n/a', 'na', '-', 'none', 'null', 'nil', '', 'empty', 'tbd', 'todo', 'pending']
+
+        return value_lower in placeholders
+
+    @staticmethod
+    def _normalize_field_value(value: Any) -> str:
+        """Normalize field values, cleaning HTML and removing placeholders"""
+        if not value:
+            return ''
+
+        # Convert to string
+        value_str = str(value).strip()
+
+        # Clean HTML
+        value_str = JiraZephyrIntegration._clean_html(value_str)
+
+        # Check if placeholder
+        if JiraZephyrIntegration._is_placeholder(value_str):
+            return ''
+
+        return value_str
 
     def authenticate(self, host: str, username: str = None, api_token: str = None,
                     credential_type: str = "token") -> Tuple[bool, str]:
@@ -358,13 +1091,90 @@ class JiraZephyrIntegration:
             logger.error(f"Error fetching issue: {str(e)}")
             return False, {}, f"Error: {str(e)}"
 
+    def fetch_zephyr_test_steps(self, issue_key: str) -> Tuple[bool, List[Dict[str, Any]], str]:
+        """
+        Fetch test steps from Zephyr Scale API
+
+        This method tries multiple Zephyr API endpoints to fetch test steps directly
+        from Zephyr's database rather than Jira custom fields.
+
+        Args:
+            issue_key: Jira issue key (e.g., BIQ-1678)
+
+        Returns:
+            Tuple of (success, steps_data, message)
+        """
+        if not self.authenticated:
+            return False, [], "Not authenticated. Please authenticate first."
+
+        try:
+            # Try multiple Zephyr API endpoints
+            zephyr_endpoints = [
+                # Zephyr Scale (Server/DC) API
+                f"{self.base_url}/rest/atm/1.0/testcase/{issue_key}",
+                # Alternative Zephyr Scale endpoint
+                f"{self.base_url}/rest/tests/1.0/testcase/{issue_key}",
+                # Zephyr Squad API
+                f"{self.base_url}/rest/zapi/latest/teststep/{issue_key}",
+            ]
+
+            for endpoint in zephyr_endpoints:
+                try:
+                    logger.info(f"Trying Zephyr API endpoint: {endpoint}")
+                    response = self.session.get(endpoint, timeout=10)
+
+                    if response.status_code == 200:
+                        data = response.json()
+                        logger.info(f"✅ Successfully fetched from Zephyr API: {endpoint}")
+
+                        # Extract steps from different response formats
+                        steps = []
+
+                        if isinstance(data, dict):
+                            # Format 1: testScript.steps
+                            if 'testScript' in data:
+                                script = data['testScript']
+                                if isinstance(script, dict) and 'steps' in script:
+                                    steps = script['steps']
+                            # Format 2: steps directly
+                            elif 'steps' in data:
+                                steps = data['steps']
+                            # Format 3: items or testSteps
+                            elif 'items' in data:
+                                steps = data['items']
+                            elif 'testSteps' in data:
+                                steps = data['testSteps']
+                        elif isinstance(data, list):
+                            steps = data
+
+                        if steps:
+                            logger.info(f"✅ Found {len(steps)} steps from Zephyr API")
+                            return True, steps, f"Successfully fetched {len(steps)} steps from Zephyr API"
+                    elif response.status_code == 404:
+                        logger.debug(f"Endpoint not found: {endpoint}")
+                    else:
+                        logger.debug(f"Endpoint returned {response.status_code}: {endpoint}")
+
+                except Exception as e:
+                    logger.debug(f"Error trying endpoint {endpoint}: {str(e)}")
+                    continue
+
+            # If no Zephyr API worked
+            logger.info("ℹ️  No Zephyr API endpoints returned test steps")
+            return False, [], "Zephyr API endpoints not available or no test steps found"
+
+        except Exception as e:
+            logger.error(f"Error fetching from Zephyr API: {str(e)}")
+            return False, [], f"Error: {str(e)}"
+
     def fetch_zephyr_test_case(self, issue_key: str) -> Tuple[bool, TestCase, str]:
         """
         Fetch test case from Zephyr with test steps, expected results, and test data
 
         Priority Order:
-        1. Test Execution Details (Test Steps, Test Data, Expected/Actual Results) - HIGHEST PRIORITY
-        2. Description converted to actionable steps via AI - FALLBACK
+        1. Zephyr Scale API (REST API endpoints) - HIGHEST PRIORITY
+        2. Jira Custom Fields (Test Steps, Test Data, Expected/Actual Results)
+        3. Description converted to actionable steps via AI - FALLBACK
 
         Args:
             issue_key: Jira issue key for the test case
@@ -398,51 +1208,153 @@ class JiraZephyrIntegration:
                 }
             )
 
-            # PRIORITY 1: Extract test execution details from Zephyr custom fields
-            # Zephyr Scale (formerly TM4J) uses different custom fields
-            # Common field IDs: customfield_10014, customfield_10015, customfield_10016
-            steps_data = None
-            test_script_field = None
+            # PRIORITY 1: Try to fetch test steps from Zephyr Scale API first
+            logger.info(f"🔍 Fetching test steps from Zephyr Scale API for {issue_key}...")
             has_test_execution_details = False
 
-            logger.info(f"🔍 Searching for test execution details in {issue_key}...")
+            zephyr_success, zephyr_steps_data, zephyr_msg = self.fetch_zephyr_test_steps(issue_key)
 
-            # Try multiple common custom field patterns for Zephyr
-            for field_id in fields.keys():
-                field_value = fields[field_id]
-                field_id_lower = str(field_id).lower()
+            if zephyr_success and zephyr_steps_data:
+                logger.info(f"✅ PRIORITY 1: {zephyr_msg}")
+                test_case.steps = self._parse_zephyr_steps(zephyr_steps_data)
+                if test_case.steps:
+                    logger.info(f"✅ Successfully parsed {len(test_case.steps)} steps from Zephyr API")
+                    has_test_execution_details = True
 
-                # Check for Zephyr test script/steps fields
-                if field_value and isinstance(field_value, (str, list, dict)):
-                    # Zephyr Scale test script field
-                    if 'script' in field_id_lower or 'teststeps' in field_id_lower or 'steps' in field_id_lower:
-                        test_script_field = field_value
-                        logger.info(f"✅ Found test execution details in field: {field_id}")
+            # PRIORITY 2: If Zephyr API fails, try Jira custom fields
+            if not has_test_execution_details:
+                logger.info(f"🔍 PRIORITY 2: Searching for test execution details in Jira custom fields...")
+                logger.info(f"   Total fields in issue: {len(fields)}")
+
+                steps_data = None
+                test_script_field = None
+                potential_fields = []
+
+                # Fields to exclude (standard Jira fields that are NOT test steps)
+                excluded_fields = [
+                    'description', 'summary', 'comment', 'comments', 'attachment',
+                    'attachments', 'issuelinks', 'subtasks', 'parent', 'labels',
+                    'priority', 'status', 'resolution', 'assignee', 'reporter',
+                    'creator', 'created', 'updated', 'duedate', 'timetracking',
+                    'timespent', 'timeestimate', 'worklog', 'project', 'issuetype',
+                    'environment', 'versions', 'fixVersions', 'components', 'watches'
+                ]
+
+                # First pass: Look for fields by name and structure
+                for field_id in fields.keys():
+                    field_value = fields[field_id]
+                    field_id_lower = str(field_id).lower()
+
+                    # Skip empty fields
+                    if not field_value:
+                        continue
+
+                    # Skip standard Jira fields that are NOT test steps
+                    if field_id in excluded_fields or field_id_lower in excluded_fields:
+                        # Use INFO level for description to make it very visible
+                        if field_id == 'description':
+                            logger.info(f"   ⏭️  Skipping 'description' field (not test steps)")
+                        else:
+                            logger.debug(f"   Skipping standard Jira field: {field_id}")
+                        continue
+
+                    # IMPORTANT: Only consider customfield_* fields for test steps
+                    # This prevents parsing description or other narrative fields as test steps
+                    is_custom_field = 'customfield' in field_id_lower
+
+                    # Check if field value has the right structure
+                    is_potential = False
+                    field_type = type(field_value).__name__
+
+                    # Pattern 1: Dict with 'steps' key (MUST be custom field)
+                    if isinstance(field_value, dict) and 'steps' in field_value:
+                        if is_custom_field:
+                            is_potential = True
+                            priority = 1
+                            logger.info(f"   Found dict with 'steps': {field_id}")
+                        else:
+                            logger.debug(f"   Skipping non-custom field with 'steps': {field_id}")
+
+                    # Pattern 2: Dict with 'testScript' key (MUST be custom field)
+                    elif isinstance(field_value, dict) and 'testScript' in field_value:
+                        if is_custom_field:
+                            is_potential = True
+                            priority = 1
+                            logger.info(f"   Found dict with 'testScript': {field_id}")
+                        else:
+                            logger.debug(f"   Skipping non-custom field with 'testScript': {field_id}")
+
+                    # Pattern 3: List that looks like steps (MUST be custom field)
+                    elif isinstance(field_value, list) and len(field_value) > 0:
+                        first_item = field_value[0]
+                        if isinstance(first_item, dict):
+                            # Check if it has step-like keys
+                            step_keys = ['description', 'step', 'testData', 'expectedResult', 'index']
+                            if any(k in first_item for k in step_keys):
+                                if is_custom_field:
+                                    is_potential = True
+                                    priority = 1
+                                    logger.info(f"   Found list with step structure: {field_id} ({len(field_value)} items)")
+                                else:
+                                    logger.debug(f"   Skipping non-custom field list: {field_id}")
+
+                    # Pattern 4: String that might be JSON (MUST be custom field)
+                    elif isinstance(field_value, str) and len(field_value) > 50 and is_custom_field:
+                        try:
+                            parsed = json.loads(field_value)
+                            if isinstance(parsed, (dict, list)):
+                                is_potential = True
+                                priority = 2
+                                logger.info(f"   Found JSON string: {field_id}")
+                        except:
+                            pass
+
+                    # Pattern 5: Field name indicates test steps (already custom field or has keyword)
+                    if any(keyword in field_id_lower for keyword in ['script', 'teststep', 'test_step', 'steps', 'zephyr']):
+                        if not is_potential and isinstance(field_value, (str, list, dict)) and is_custom_field:
+                            is_potential = True
+                            priority = 3
+                            logger.info(f"   Found by name match: {field_id}")
+
+                    if is_potential:
+                        potential_fields.append((priority, field_id, field_value))
+
+                # Sort by priority and try to parse
+                potential_fields.sort(key=lambda x: x[0])
+
+                logger.info(f"   Found {len(potential_fields)} potential test step fields")
+
+                for priority, field_id, field_value in potential_fields:
+                    logger.info(f"   Trying to parse field: {field_id} (priority {priority})")
+
+                    # Try to parse this field
+                    parsed_steps = self._parse_zephyr_steps(field_value)
+
+                    if parsed_steps and len(parsed_steps) > 0:
+                        logger.info(f"✅ Successfully parsed {len(parsed_steps)} steps from {field_id}")
+
+                        # Validate we're not using a standard field
+                        if field_id in ['description', 'summary', 'comment']:
+                            logger.error(f"❌ ERROR: Parsed steps from standard field '{field_id}' - this should not happen!")
+                            logger.error(f"   This indicates a bug in field filtering logic")
+                            # Don't use these steps - continue searching
+                            continue
+
+                        test_case.steps = parsed_steps
                         has_test_execution_details = True
                         break
-                    # Old TM4J format
-                    elif 'customfield' in field_id_lower and field_value:
-                        if not steps_data:  # Take the first non-empty custom field as fallback
-                            steps_data = field_value
+                    else:
+                        logger.debug(f"   No valid steps found in {field_id}")
 
-            # Parse steps from the found field
-            if test_script_field:
-                test_case.steps = self._parse_zephyr_steps(test_script_field)
-                if test_case.steps:
-                    logger.info(f"✅ PRIORITY 1: Parsed {len(test_case.steps)} steps from test execution details")
-                    has_test_execution_details = True
-            elif steps_data:
-                test_case.steps = self._parse_steps(steps_data)
-                if test_case.steps:
-                    logger.info(f"✅ PRIORITY 1: Parsed {len(test_case.steps)} steps from custom field")
-                    has_test_execution_details = True
+                if not has_test_execution_details:
+                    logger.warning(f"⚠️  No test execution details found in {len(potential_fields)} potential fields")
 
-            # PRIORITY 2: If no test execution details found, use AI to convert description to actionable steps
+            # PRIORITY 3: If no test execution details found, use AI to convert description to actionable steps
             if not has_test_execution_details or not test_case.steps:
                 logger.info(f"⚠️  No test execution details found in {issue_key}")
 
                 if test_case.description:
-                    logger.info(f"🤖 PRIORITY 2: Using Azure OpenAI to convert description to actionable steps...")
+                    logger.info(f"🤖 PRIORITY 3: Using Azure OpenAI to convert description to actionable steps...")
 
                     # Use AI to convert description to actionable test steps
                     ai_steps = self._convert_description_to_steps_with_ai(test_case.description, test_case.title)
@@ -496,7 +1408,7 @@ class JiraZephyrIntegration:
         Returns:
             List of TestStep objects with actionable steps
         """
-        if not AZURE_AVAILABLE:
+        if not AZURE_AVAILABLE or AzureOpenAIClient is None:
             logger.warning("Azure OpenAI not available for AI conversion")
             return []
 
@@ -526,46 +1438,82 @@ Convert this description into a numbered list of actionable test steps that can 
 📝 FORMAT REQUIREMENTS:
 Return ONLY a JSON array of step objects. Each step object must have:
 - "step_number": integer (1, 2, 3, ...)
-- "description": string (the actionable step description)
-- "test_data": string (optional, any test data needed for this step)
-- "expected_result": string (optional, what should happen after this step)
+- "description": string (the actionable step description in clear, natural language)
+- "test_data": string (optional, specific input values, usernames, passwords, search terms, etc.)
+- "expected_result": string (optional, what should be verified or what should happen)
+
+🎯 STEP DESCRIPTION RULES:
+1. ALWAYS include full URLs when navigating (e.g., "Navigate to https://www.example.com/login")
+2. Be specific about UI elements (e.g., "Click the 'Sign In' button" not "Click button")
+3. Use action verbs: Navigate, Click, Enter, Select, Verify, Check, Wait
+4. Separate actions and verifications into different steps
+5. Include field names when entering data (e.g., "Enter username in the 'Email' field")
+
+🎯 TEST DATA RULES:
+1. Extract specific values mentioned (emails, usernames, passwords, search terms, etc.)
+2. Use realistic examples if not specified (e.g., "test@example.com", "validPassword123")
+3. Keep test data separate from the action description
+4. Include any special formatting requirements (e.g., "Date in MM/DD/YYYY format")
+
+🎯 EXPECTED RESULT RULES:
+1. Be specific about what to verify (e.g., "Dashboard page displays with username in header")
+2. Include page titles, success messages, error messages mentioned
+3. Describe visual changes (e.g., "Modal dialog appears", "Page redirects to cart")
+4. Include what NOT to see (e.g., "No error messages displayed")
 
 🎨 EXAMPLE OUTPUT:
 [
   {{
     "step_number": 1,
-    "description": "Navigate to https://www.example.com/",
+    "description": "Navigate to https://www.example.com/login",
     "test_data": "",
-    "expected_result": "Home page loads successfully"
+    "expected_result": "Login page loads with email and password fields visible"
   }},
   {{
     "step_number": 2,
-    "description": "Click on the 'Products' menu",
-    "test_data": "",
-    "expected_result": "Products dropdown menu appears"
+    "description": "Enter email address in the 'Email' field",
+    "test_data": "testuser@example.com",
+    "expected_result": "Email field accepts the input"
   }},
   {{
     "step_number": 3,
-    "description": "Enter 'laptop' in the search box",
-    "test_data": "laptop",
-    "expected_result": "Search suggestions appear"
+    "description": "Enter password in the 'Password' field",
+    "test_data": "SecurePass123!",
+    "expected_result": "Password is masked with dots"
+  }},
+  {{
+    "step_number": 4,
+    "description": "Click the 'Sign In' button",
+    "test_data": "",
+    "expected_result": "Page redirects to dashboard"
+  }},
+  {{
+    "step_number": 5,
+    "description": "Verify the user dashboard displays",
+    "test_data": "",
+    "expected_result": "Dashboard page shows 'Welcome testuser@example.com' message"
   }}
 ]
 
-🚨 CRITICAL:
-- Return ONLY valid JSON array, no explanations or markdown
-- Each step must be browser-automatable
-- Include specific URLs, button names, field names when mentioned
-- Break complex tasks into multiple simple steps
-- Add verification steps after important actions
+🚨 CRITICAL RULES:
+- Return ONLY valid JSON array, no markdown code blocks or explanations
+- Extract ALL URLs mentioned and include them in navigation steps
+- Separate action steps from verification steps
+- Each step must be a single, clear, automatable action
+- If a URL is missing but context suggests navigation, infer a reasonable URL
+- Include both positive (success) and negative (error) verification steps when mentioned
+- Preserve all specific values, names, and identifiers from the original description
 
 Generate the actionable test steps now:"""
 
-            # Call Azure OpenAI
-            response = azure_client.completion_create(
+            # Call Azure OpenAI with tracking
+            response = track_ai_call(
+                azure_client,
+                operation='convert_description_to_steps',
+                func_name='completion_create',
                 prompt=prompt,
                 max_tokens=2000,
-                temperature=0.3  # Lower temperature for more consistent output
+                temperature=0.3
             )
 
             if not response or 'choices' not in response:
@@ -613,72 +1561,295 @@ Generate the actionable test steps now:"""
 
     def _parse_zephyr_steps(self, test_script_data: Any) -> List[TestStep]:
         """
-        Parse Zephyr Scale test script format
+        Parse Zephyr Scale test script format with enhanced URL extraction and test data handling
 
-        Zephyr Scale format:
-        {
-            "steps": [
-                {
-                    "index": 1,
-                    "description": "Step description",
-                    "testData": "Test data",
-                    "expectedResult": "Expected result"
-                }
-            ]
-        }
+        Supports multiple Zephyr formats:
+        1. {"steps": [...]} - Direct steps array
+        2. {"testScript": {"steps": [...]}} - Nested testScript
+        3. [...] - Direct array of steps
+        4. JSON string containing any of the above
+
+        Step format variations:
+        - {"index": 1, "description": "...", "testData": "...", "expectedResult": "..."}
+        - {"step": "...", "data": "...", "result": "...", "expected": "..."}
+        - Plain text strings
         """
         steps = []
 
         try:
+            logger.debug(f"_parse_zephyr_steps input type: {type(test_script_data).__name__}")
+
             # Handle string JSON
             if isinstance(test_script_data, str):
+                # Clean up common string issues
+                test_script_data = test_script_data.strip()
+
+                if not test_script_data:
+                    logger.debug("Empty string provided")
+                    return []
+
                 try:
                     test_script_data = json.loads(test_script_data)
-                except json.JSONDecodeError:
+                    logger.debug(f"Parsed JSON string to: {type(test_script_data).__name__}")
+                except json.JSONDecodeError as e:
                     # If not JSON, try parsing as plain text
+                    logger.debug(f"Not valid JSON: {e}, trying text parsing")
                     return self._parse_steps_from_text(test_script_data)
 
-            # Handle Zephyr Scale format
+            # Extract steps from various structures
+            steps_list = []
+
             if isinstance(test_script_data, dict):
-                steps_list = test_script_data.get('steps', [])
-                if not steps_list and test_script_data.get('text'):
-                    # Sometimes it's in 'text' field
+                # Format 1: {"testScript": {"steps": [...]}}
+                if 'testScript' in test_script_data:
+                    script = test_script_data['testScript']
+                    if isinstance(script, dict) and 'steps' in script:
+                        steps_list = script['steps']
+                        logger.debug(f"Found steps in testScript.steps: {len(steps_list)} items")
+                    elif isinstance(script, list):
+                        steps_list = script
+                        logger.debug(f"Found steps in testScript (list): {len(steps_list)} items")
+
+                # Format 2: {"steps": [...]}
+                elif 'steps' in test_script_data:
+                    steps_list = test_script_data['steps']
+                    logger.debug(f"Found steps in root.steps: {len(steps_list)} items")
+
+                # Format 3: {"text": "..."}
+                elif 'text' in test_script_data and test_script_data['text']:
+                    logger.debug("Found text field, parsing as text")
                     return self._parse_steps_from_text(test_script_data['text'])
+
+                # Format 4: {"items": [...]} or {"testSteps": [...]}
+                elif 'items' in test_script_data:
+                    steps_list = test_script_data['items']
+                    logger.debug(f"Found steps in items: {len(steps_list)} items")
+                elif 'testSteps' in test_script_data:
+                    steps_list = test_script_data['testSteps']
+                    logger.debug(f"Found steps in testSteps: {len(steps_list)} items")
+
+                # Format 5: The dict itself might be a single step
+                elif any(k in test_script_data for k in ['description', 'step', 'testData', 'expectedResult']):
+                    steps_list = [test_script_data]
+                    logger.debug("Single step found in dict format")
+
             elif isinstance(test_script_data, list):
                 steps_list = test_script_data
+                logger.debug(f"Direct list provided: {len(steps_list)} items")
             else:
+                logger.warning(f"Unexpected data type: {type(test_script_data).__name__}")
                 return []
+
+            if not steps_list:
+                logger.debug("No steps list extracted from data structure")
+                return []
+
+            # Parse each step
+            actual_step_count = 0
+            skipped_count = 0
 
             for i, step_data in enumerate(steps_list):
                 if isinstance(step_data, dict):
-                    # Zephyr Scale format
-                    step_num = step_data.get('index', i + 1)
-                    description = step_data.get('description', step_data.get('step', ''))
-                    test_data = step_data.get('testData', step_data.get('data', ''))
-                    expected = step_data.get('expectedResult', step_data.get('result', step_data.get('expected', '')))
-                    actual = step_data.get('actualResult', step_data.get('actual', ''))
+                    # Extract fields with multiple key variations
+                    description = (
+                        step_data.get('description') or
+                        step_data.get('step') or
+                        step_data.get('action') or
+                        step_data.get('stepDescription') or
+                        ''
+                    )
+
+                    test_data = (
+                        step_data.get('testData') or
+                        step_data.get('data') or
+                        step_data.get('input') or
+                        step_data.get('testInput') or
+                        ''
+                    )
+
+                    expected = (
+                        step_data.get('expectedResult') or
+                        step_data.get('result') or
+                        step_data.get('expected') or
+                        step_data.get('expectedOutput') or
+                        step_data.get('verification') or
+                        ''
+                    )
+
+                    actual = (
+                        step_data.get('actualResult') or
+                        step_data.get('actual') or
+                        step_data.get('actualOutput') or
+                        ''
+                    )
+
+                    # Normalize and clean all fields
+                    description = self._normalize_field_value(description)
+                    test_data = self._normalize_field_value(test_data)
+                    expected = self._normalize_field_value(expected)
+                    actual = self._normalize_field_value(actual)
+
+                    # Skip empty steps
+                    if not description:
+                        skipped_count += 1
+                        logger.debug(f"Skipping empty step at index {i} (original index: {step_data.get('index', 'N/A')})")
+                        continue
+
+                    # Increment sequential counter
+                    actual_step_count += 1
+
+                    # Enhanced: Extract and normalize step components
+                    description, test_data, expected = self._enhance_step_components(
+                        description, test_data, expected
+                    )
+
+                    logger.debug(f"Step {actual_step_count}: '{description[:60]}...' | data: '{test_data[:30]}...' | expected: '{expected[:30]}...'")
 
                     step = TestStep(
-                        step_number=step_num,
+                        step_number=actual_step_count,
                         description=description,
                         value=test_data if test_data else '',
                         notes=expected if expected else '',
-                        action=actual if actual else ''  # Store actual result in action field for now
+                        action=actual if actual else ''
                     )
                     steps.append(step)
+
                 elif isinstance(step_data, str):
                     # Plain text step
-                    step = TestStep(
-                        step_number=i + 1,
-                        description=step_data
-                    )
-                    steps.append(step)
+                    step_text = step_data.strip()
+                    if step_text:
+                        actual_step_count += 1
+                        enhanced_desc, test_data, expected = self._enhance_step_components(step_text, '', '')
+                        step = TestStep(
+                            step_number=actual_step_count,
+                            description=enhanced_desc,
+                            value=test_data,
+                            notes=expected
+                        )
+                        steps.append(step)
+                    else:
+                        skipped_count += 1
+                        logger.debug(f"Skipping empty text step at index {i}")
+                else:
+                    skipped_count += 1
+                    logger.debug(f"Skipping invalid step type at index {i}: {type(step_data).__name__}")
+
+            if steps:
+                logger.info(f"✅ Parsed {len(steps)} valid steps (skipped {skipped_count} empty/invalid)")
+            else:
+                logger.debug(f"No valid steps parsed (skipped {skipped_count})")
 
             return steps
 
         except Exception as e:
             logger.error(f"Error parsing Zephyr steps: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             return []
+
+    def _enhance_step_components(self, description: str, test_data: str, expected: str) -> Tuple[str, str, str]:
+        """
+        Enhanced extraction and normalization of step components
+
+        This method intelligently extracts:
+        - URLs from descriptions and test data
+        - Test data values (quoted strings, credentials, specific inputs)
+        - Expected results and validation criteria
+
+        Args:
+            description: Step description
+            test_data: Test data field
+            expected: Expected result field
+
+        Returns:
+            Tuple of (enhanced_description, test_data, expected_result)
+        """
+        # URL regex pattern
+        url_pattern = r'https?://[^\s<>"{}|\\^`\[\]]+|www\.[^\s<>"{}|\\^`\[\]]+'
+
+        # Extract URLs from description
+        urls_in_desc = re.findall(url_pattern, description, re.IGNORECASE)
+
+        # Extract URLs from test data
+        urls_in_data = re.findall(url_pattern, test_data, re.IGNORECASE) if test_data else []
+
+        # If URL is in test_data but not in description, move it to description
+        if urls_in_data and not urls_in_desc:
+            url = urls_in_data[0]
+            # Remove URL from test_data
+            test_data = re.sub(url_pattern, '', test_data, flags=re.IGNORECASE).strip()
+            # Add to description with navigation context
+            if not any(nav_word in description.lower() for nav_word in ['navigate', 'go to', 'open', 'visit', 'browse']):
+                description = f"Navigate to {url}"
+            else:
+                description = f"{description} {url}".strip()
+            urls_in_desc = [url]
+
+        # If description has URL but no navigation context, add it
+        if urls_in_desc and not any(nav_word in description.lower() for nav_word in ['navigate', 'go to', 'open', 'visit', 'browse']):
+            if description.strip().startswith(('http://', 'https://', 'www.')):
+                description = f"Navigate to {description}"
+
+        # Extract test data from description if not already in test_data field
+        if not test_data or len(test_data.strip()) == 0:
+            # Look for quoted strings (potential test data)
+            quoted_data = re.findall(r'["\']([^"\']+)["\']', description)
+            if quoted_data:
+                # Extract first significant quoted string
+                for data in quoted_data:
+                    if len(data) > 2 and not data.lower() in ['the', 'a', 'an']:  # Filter out articles
+                        test_data = data
+                        break
+
+            # Look for common test data patterns
+            # Email pattern
+            email_match = re.search(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', description)
+            if email_match:
+                test_data = email_match.group(0)
+
+            # Username pattern (e.g., "username: admin")
+            username_match = re.search(r'(?:username|user|login)[\s:=]+([^\s,;]+)', description, re.IGNORECASE)
+            if username_match and not test_data:
+                test_data = username_match.group(1)
+
+            # Password pattern
+            password_match = re.search(r'(?:password|pwd|pass)[\s:=]+([^\s,;]+)', description, re.IGNORECASE)
+            if password_match and not test_data:
+                test_data = password_match.group(1)
+
+        # Extract expected result from description if not in expected field
+        if not expected or len(expected.strip()) == 0:
+            # Look for verification keywords
+            verify_patterns = [
+                r'(?:verify|check|ensure|confirm|validate)[\s:]+(.*?)(?:\.|$)',
+                r'(?:should|must|expected to)[\s:]+(.*?)(?:\.|$)',
+                r'(?:result|outcome)[\s:]+(.*?)(?:\.|$)'
+            ]
+
+            for pattern in verify_patterns:
+                match = re.search(pattern, description, re.IGNORECASE)
+                if match:
+                    expected = match.group(1).strip()
+                    break
+
+            # Look for success/error messages in quotes
+            if not expected:
+                message_match = re.search(r'(?:message|displays?|shows?)[\s:]+["\']([^"\']+)["\']', description, re.IGNORECASE)
+                if message_match:
+                    expected = message_match.group(1)
+
+        # Clean up description - remove extracted test data and expected results
+        if test_data and test_data in description:
+            # Only remove if it's not part of a URL
+            if not any(url for url in urls_in_desc if test_data in url):
+                description = description.replace(f'"{test_data}"', '[test data]').replace(f"'{test_data}'", '[test data]')
+
+        # Normalize whitespace
+        description = ' '.join(description.split())
+        test_data = ' '.join(test_data.split()) if test_data else ''
+        expected = ' '.join(expected.split()) if expected else ''
+
+        return description, test_data, expected
 
     def _parse_steps(self, steps_data: Any) -> List[TestStep]:
         """Parse steps from Zephyr custom field data"""
@@ -772,6 +1943,106 @@ Generate the actionable test steps now:"""
             ))
 
         return steps
+
+    def convert_steps_to_natural_language(self, test_case: TestCase) -> str:
+        """
+        Convert test case steps to natural language format for AI analysis
+
+        Args:
+            test_case: TestCase object with steps
+
+        Returns:
+            Natural language representation of test steps
+        """
+        lines = []
+        lines.append(f"Test Case: {test_case.title}")
+        lines.append(f"ID: {test_case.id}")
+        lines.append("")
+
+        if test_case.description:
+            lines.append("Description:")
+            lines.append(test_case.description)
+            lines.append("")
+
+        if test_case.preconditions:
+            lines.append("Preconditions:")
+            lines.append(test_case.preconditions)
+            lines.append("")
+
+        lines.append("Test Steps:")
+        for step in test_case.steps:
+            lines.append(f"{step.step_number}. {step.description}")
+
+            if step.value:
+                lines.append(f"   Test Data: {step.value}")
+
+            if step.notes:
+                lines.append(f"   Expected Result: {step.notes}")
+
+            lines.append("")
+
+        return "\n".join(lines)
+
+    def get_step_summary(self, test_case: TestCase) -> Dict[str, Any]:
+        """
+        Get summary statistics about test case steps
+
+        Args:
+            test_case: TestCase object with steps
+
+        Returns:
+            Dictionary with step statistics and metadata
+        """
+        url_pattern = r'https?://[^\s<>"{}|\\^`\[\]]+|www\.[^\s<>"{}|\\^`\[\]]+'
+
+        summary = {
+            'total_steps': len(test_case.steps),
+            'navigation_steps': 0,
+            'input_steps': 0,
+            'verification_steps': 0,
+            'urls_found': [],
+            'test_data_provided': False,
+            'expected_results_provided': False,
+            'steps_with_urls': [],
+            'steps_with_data': [],
+            'steps_with_expected': []
+        }
+
+        for step in test_case.steps:
+            description_lower = step.description.lower()
+
+            # Count navigation steps
+            if any(word in description_lower for word in ['navigate', 'go to', 'open', 'visit', 'browse', 'url', 'http']):
+                summary['navigation_steps'] += 1
+
+            # Count input steps
+            if any(word in description_lower for word in ['enter', 'input', 'type', 'fill', 'select', 'choose', 'click']):
+                summary['input_steps'] += 1
+
+            # Count verification steps
+            if any(word in description_lower for word in ['verify', 'check', 'ensure', 'confirm', 'validate', 'should', 'expect']):
+                summary['verification_steps'] += 1
+
+            # Extract URLs
+            urls = re.findall(url_pattern, step.description, re.IGNORECASE)
+            if urls:
+                summary['urls_found'].extend(urls)
+                summary['steps_with_urls'].append(step.step_number)
+
+            # Check for test data
+            if step.value and step.value.strip():
+                summary['test_data_provided'] = True
+                summary['steps_with_data'].append(step.step_number)
+
+            # Check for expected results
+            if step.notes and step.notes.strip():
+                summary['expected_results_provided'] = True
+                summary['steps_with_expected'].append(step.step_number)
+
+        # Remove duplicate URLs
+        summary['urls_found'] = list(set(summary['urls_found']))
+
+        return summary
 
     def create_bug_ticket(self, bug_data: Dict[str, Any], project_key: str, issue_type: str = "Bug") -> Tuple[bool, str, str]:
         """
@@ -911,7 +2182,10 @@ Format using Jira markdown (h2, h3, *, numbered lists, etc.)"""
                 }
             ]
 
-            response = azure_client.chat_completion_create(
+            response = track_ai_call(
+                azure_client,
+                operation='enhance_bug_description',
+                func_name='chat_completion_create',
                 messages=messages,
                 temperature=0.3,
                 max_tokens=1000
@@ -1042,10 +2316,10 @@ original_stderr = sys.stderr
 try:
     # Redirect stderr to devnull during imports
     sys.stderr = open(os.devnull, 'w')
-    
+
     # Import the MCP server instance (this is where warnings occur)
     from robotmcp.server import mcp
-    
+
 finally:
     # Restore stderr for MCP protocol communication
     if sys.stderr != original_stderr:
@@ -1639,7 +2913,18 @@ class BrowserAutomationManager:
                     try:
                         self.driver.get(base_url)
                         self._wait_for_page_load(timeout=20)  # Reduced from 30s to 20s - fail fast
+
+                        # Check for Cloudflare/CAPTCHA challenges
+                        if self._detect_cloudflare_or_captcha():
+                            logger.warning("   ⚠️ Cloudflare/CAPTCHA detected! Waiting for manual resolution...")
+                            self._wait_for_captcha_resolution(timeout=120)
+
                         logger.info("   ✅ Page loaded successfully")
+
+                        # Detect brand for intelligent automation
+                        if BRAND_KNOWLEDGE_AVAILABLE:
+                            self._detect_and_load_brand_knowledge(base_url)
+
                         break
                     except Exception as nav_error:
                         if nav_attempt < max_nav_retries:
@@ -1711,6 +2996,109 @@ class BrowserAutomationManager:
         except Exception as e:
             logger.warning(f"⚠️ Page load wait timeout after {timeout}s: {str(e)}")
             # Continue anyway - page might be partially loaded
+
+    def _detect_cloudflare_or_captcha(self) -> bool:
+        """
+        Detect if page is showing Cloudflare challenge or CAPTCHA
+
+        Returns:
+            True if Cloudflare/CAPTCHA detected, False otherwise
+        """
+        try:
+            from selenium.webdriver.common.by import By
+
+            # Get page source and title for analysis
+            page_source = self.driver.page_source.lower()
+            page_title = self.driver.title.lower()
+
+            # Cloudflare detection patterns
+            cloudflare_indicators = [
+                'cloudflare' in page_title,
+                'just a moment' in page_title,
+                'checking your browser' in page_source,
+                'cloudflare' in page_source and 'ray id' in page_source,
+                'cf-browser-verification' in page_source,
+                'cf_chl_opt' in page_source,
+                'challenge-platform' in page_source,
+            ]
+
+            # Generic CAPTCHA detection patterns
+            captcha_indicators = [
+                'recaptcha' in page_source,
+                'g-recaptcha' in page_source,
+                'hcaptcha' in page_source,
+                'captcha' in page_title,
+                'verify you are human' in page_source,
+                'security check' in page_title.lower(),
+            ]
+
+            # Check for Cloudflare/CAPTCHA elements in DOM
+            try:
+                cloudflare_elements = [
+                    self.driver.find_elements(By.ID, 'challenge-form'),
+                    self.driver.find_elements(By.CLASS_NAME, 'cf-browser-verification'),
+                    self.driver.find_elements(By.CLASS_NAME, 'g-recaptcha'),
+                    self.driver.find_elements(By.CLASS_NAME, 'h-captcha'),
+                ]
+
+                has_challenge_elements = any(len(elements) > 0 for elements in cloudflare_elements)
+            except:
+                has_challenge_elements = False
+
+            # Return True if any indicator is found
+            if any(cloudflare_indicators) or any(captcha_indicators) or has_challenge_elements:
+                logger.warning("🛡️ Cloudflare/CAPTCHA detected!")
+                if any(cloudflare_indicators):
+                    logger.warning("   - Cloudflare challenge page detected")
+                if any(captcha_indicators):
+                    logger.warning("   - CAPTCHA challenge detected")
+                return True
+
+            return False
+
+        except Exception as e:
+            logger.debug(f"Error in Cloudflare/CAPTCHA detection: {e}")
+            return False
+
+    def _wait_for_captcha_resolution(self, timeout: int = 120):
+        """
+        Wait for user to resolve CAPTCHA/Cloudflare challenge
+
+        Args:
+            timeout: Maximum time to wait in seconds (default 120s = 2 minutes)
+        """
+        try:
+            from selenium.webdriver.support.ui import WebDriverWait
+
+            logger.info(f"⏳ Waiting up to {timeout}s for CAPTCHA/Cloudflare resolution...")
+            logger.info("   Please solve the challenge manually in the browser window")
+
+            start_time = time.time()
+            check_interval = 2  # Check every 2 seconds
+
+            while time.time() - start_time < timeout:
+                # Check if challenge is still present
+                if not self._detect_cloudflare_or_captcha():
+                    logger.info("   ✅ Challenge resolved! Continuing automation...")
+                    time.sleep(2)  # Give page a moment to fully load after resolution
+                    return True
+
+                # Show progress every 10 seconds
+                elapsed = int(time.time() - start_time)
+                if elapsed % 10 == 0 and elapsed > 0:
+                    remaining = timeout - elapsed
+                    logger.info(f"   ⏳ Still waiting... ({remaining}s remaining)")
+
+                time.sleep(check_interval)
+
+            # Timeout reached
+            logger.error(f"   ❌ Timeout: Challenge not resolved within {timeout}s")
+            logger.error("   Please solve the Cloudflare/CAPTCHA challenge and restart")
+            return False
+
+        except Exception as e:
+            logger.error(f"Error waiting for CAPTCHA resolution: {e}")
+            return False
 
     def capture_network_logs(self):
         """Capture network activity from performance logs"""
@@ -1789,6 +3177,43 @@ class BrowserAutomationManager:
 
         except Exception as e:
             logger.warning(f"⚠️ Could not capture console logs: {str(e)}")
+
+    def _detect_and_load_brand_knowledge(self, url: str):
+        """
+        Detect brand from URL and load comprehensive brand knowledge for intelligent automation
+
+        Args:
+            url: The current URL being tested
+        """
+        try:
+            if not BRAND_KNOWLEDGE_AVAILABLE:
+                return
+
+            # Detect brand from URL
+            detected_brand = detect_brand_from_url(url)
+
+            if detected_brand and detected_brand != "unknown":
+                self.current_brand = detected_brand
+                self.brand_knowledge = get_brand_knowledge(detected_brand)
+                self.brand_detected = True
+
+                brand_display_name = self.brand_knowledge.get("display_name", detected_brand)
+                logger.info(f"🎯 Brand detected: {brand_display_name}")
+                logger.info(f"   📚 Loaded {len(self.brand_knowledge.get('products', {}))} product categories")
+                logger.info(f"   🧭 Loaded navigation structure with {len(self.brand_knowledge.get('navigation', {}).get('main_menu', {}))} main menu items")
+                logger.info(f"   ✨ Enhanced automation strategies enabled")
+
+                # Log AI context availability
+                if "ai_context" in self.brand_knowledge and self.brand_knowledge["ai_context"]:
+                    logger.info(f"   🤖 AI-enhanced prompts available for {brand_display_name}")
+            else:
+                logger.info(f"ℹ️ Brand not detected from URL: {url}")
+                logger.info(f"   Operating in generic mode without brand-specific optimizations")
+
+        except Exception as e:
+            logger.warning(f"⚠️ Error detecting brand: {str(e)}")
+            # Continue without brand knowledge
+            pass
 
     def capture_dom_snapshot(self, step_description: str):
         """
@@ -2141,18 +3566,38 @@ class BrowserAutomationManager:
             element: Selenium WebElement that was successfully used
             step: Test step being executed
             action_type: Type of action (click, input, select, etc.)
-            test_case: Parent test case (optional)
+            test_case: Parent test case (optional but CRITICAL for proper capture)
         """
         # Import at method level to ensure it's available for exception handling
         from selenium.common.exceptions import StaleElementReferenceException
 
         try:
+            # CRITICAL: Log if test_case is None - this is a major issue
+            if test_case is None:
+                logger.warning(f"⚠️  test_case is None in _capture_element_locator for step {step.step_number}!")
+                logger.warning(f"   This will prevent proper locator capture. Locators will show 'NEED_TO_UPDATE'")
+            else:
+                # Ensure test_case.metadata exists and is properly initialized
+                if not hasattr(test_case, 'metadata'):
+                    test_case.metadata = {}
+                    logger.debug(f"   Initialized test_case.metadata (was missing)")
+                elif test_case.metadata is None:
+                    test_case.metadata = {}
+                    logger.debug(f"   Initialized test_case.metadata (was None)")
+
+                if 'captured_locators' not in test_case.metadata:
+                    test_case.metadata['captured_locators'] = {}
+                    logger.debug(f"   Initialized test_case.metadata['captured_locators']")
+
             # Use the centralized method to generate locator name for consistency
             locator_base = self._infer_locator_name(step.description)
 
             # Fallback if the method returns a generic name
             if locator_base == "element_locator":
                 locator_base = f'step_{step.step_number}_locator'
+
+            logger.debug(f"   🎯 Capturing locator for: {locator_base}")
+            logger.debug(f"      Step #{step.step_number}: {step.description[:60]}...")
 
             # Try to get the best locator in priority order
             locators_found = []
@@ -2273,24 +3718,28 @@ class BrowserAutomationManager:
                 locators_found.sort(key=lambda x: x[2])
                 best_locator_type, best_locator_value, priority = locators_found[0]
 
-                # Store in captured_locators for use in file generation
+                # CRITICAL FIX: Store in MULTIPLE places for maximum reliability
+
+                # 1. Store in self.captured_locators (instance-level storage)
                 self.captured_locators[locator_base] = best_locator_value
 
-                # Also store in test case metadata if available
+                # 2. Store in test_case.metadata (test-level storage) - MOST IMPORTANT
                 if test_case:
-                    # Ensure metadata dict exists and is properly initialized
-                    if not hasattr(test_case, 'metadata'):
-                        test_case.metadata = {}
-                    elif test_case.metadata is None:
-                        test_case.metadata = {}
-
-                    if 'captured_locators' not in test_case.metadata:
-                        test_case.metadata['captured_locators'] = {}
-
-                    # Store the captured locator
                     test_case.metadata['captured_locators'][locator_base] = best_locator_value
+                    logger.debug(f"      💾 Stored in test_case.metadata['captured_locators']['{locator_base}']")
 
-                    logger.debug(f"      💾 Stored in test_case.metadata: test_case.metadata['captured_locators']['{locator_base}'] = '{best_locator_value}'")
+                # 3. Also store with step number as backup key (in case name inference changes)
+                step_key = f"step_{step.step_number}_{action_type}_locator"
+                self.captured_locators[step_key] = best_locator_value
+                if test_case:
+                    test_case.metadata['captured_locators'][step_key] = best_locator_value
+
+                # 4. Store simplified version (without underscores) for fuzzy matching
+                simple_key = locator_base.replace('_', '').lower()
+                if test_case and 'captured_locators_simple' not in test_case.metadata:
+                    test_case.metadata['captured_locators_simple'] = {}
+                if test_case:
+                    test_case.metadata['captured_locators_simple'][simple_key] = best_locator_value
 
                 # Get tag name safely for metadata
                 tag_name = safe_get_tag_name()
@@ -2303,7 +3752,8 @@ class BrowserAutomationManager:
                     'element_tag': tag_name,
                     'element_text': element_text[:50] if element_text else '',
                     'step_number': step.step_number,
-                    'action_type': action_type
+                    'action_type': action_type,
+                    'locator_name': locator_base
                 }
 
                 # If it's an input field, capture the value too
@@ -2316,12 +3766,11 @@ class BrowserAutomationManager:
 
                 logger.info(f"   ✅ CAPTURED: {locator_base} = '{best_locator_value}' (priority {priority}: {best_locator_type})")
 
-                # DEBUG: Log capture details
-                logger.info(f"      📝 Step #{step.step_number}: {step.description[:50]}...")
-                logger.info(f"      🎯 Locator name: {locator_base}")
-                logger.info(f"      💾 Stored in self.captured_locators: {locator_base in self.captured_locators}")
+                # DEBUG: Verify storage
+                logger.debug(f"      ✓ In self.captured_locators: {locator_base in self.captured_locators}")
                 if test_case:
-                    logger.info(f"      💾 Stored in test_case.metadata: {locator_base in test_case.metadata.get('captured_locators', {})}")
+                    logger.debug(f"      ✓ In test_case.metadata['captured_locators']: {locator_base in test_case.metadata.get('captured_locators', {})}")
+                    logger.debug(f"      ✓ Total captured so far: {len(test_case.metadata.get('captured_locators', {}))}")
 
                 # Store step metadata
                 if not hasattr(step, 'metadata') or step.metadata is None:
@@ -2331,6 +3780,7 @@ class BrowserAutomationManager:
                 return element_info
             else:
                 logger.warning(f"   ⚠️  Could not extract any locator for element in step {step.step_number}")
+                logger.warning(f"      Element tag: {safe_get_tag_name()}, text: {element_text[:30]}")
                 return None
 
         except StaleElementReferenceException as e:
@@ -2341,33 +3791,200 @@ class BrowserAutomationManager:
             return None
 
     async def _smart_click(self, step: TestStep, test_case: TestCase) -> Tuple[bool, str]:
-        """Smart click with AI-powered element finding"""
+        """Smart click with comprehensive element finding (30+ strategies) and multiple click methods"""
         try:
+            import re
             from selenium.webdriver.common.by import By
             from selenium.webdriver.support.ui import WebDriverWait
             from selenium.webdriver.support import expected_conditions as EC
+            from selenium.webdriver.common.action_chains import ActionChains
 
-            # Extract target text from description
+            # CRITICAL: Wait for page to be ready before attempting click
+            try:
+                WebDriverWait(self.driver, 10).until(
+                    lambda d: d.execute_script("return document.readyState") == "complete"
+                )
+                logger.debug("✓ Page ready state: complete")
+            except Exception as e:
+                logger.warning(f"⚠️  Page may not be fully loaded: {str(e)[:50]}")
+
             description = step.description.lower()
 
-            # Try multiple strategies
+            # Extract text from description (quoted text gets highest priority)
+            quoted_texts = re.findall(r'"([^"]+)"', step.description)
+            quoted_texts += re.findall(r"'([^']+)'", step.description)
+
+            logger.info(f"🎯 Clicking: {step.description}")
+            if quoted_texts:
+                logger.info(f"   Target text: '{quoted_texts[0]}'")
+
+            # Build SIMPLIFIED strategy list (ORDERED BY SUCCESS PROBABILITY)
             strategies = []
 
-            # Strategy 1: Look for quoted text
-            quoted = re.findall(r'"([^"]+)"', step.description)
-            if quoted:
-                strategies.append(('link', quoted[0]))
-                strategies.append(('xpath', f"//button[contains(text(), '{quoted[0]}')]"))
-                strategies.append(('xpath', f"//*[contains(text(), '{quoted[0]}')]"))
+            # ========== PHASE 0: AI-LEARNED PATTERNS (Try what worked before - HIGHEST priority) ==========
+            if quoted_texts:
+                target_text = quoted_texts[0]
+                # Determine context
+                if any(word in description for word in ['submit', 'payment', 'pay', 'checkout', 'purchase']):
+                    context = 'submit_payment'
+                elif any(word in description for word in ['click', 'button']):
+                    context = 'button_click'
+                elif any(word in description for word in ['menu', 'nav', 'dropdown']):
+                    context = 'navigation'
+                else:
+                    context = 'general'
 
-            # Strategy 2: Extract key words
-            key_words = ['button', 'link', 'menu', 'explore', 'continue', 'submit', 'checkout', 'plan', 'select']
+                # Get AI-learned strategies based on past successes
+                learned_strategies = self.locator_learner.generate_strategies(target_text, context)
+                if learned_strategies:
+                    logger.info(f"🧠 Using {len(learned_strategies)} AI-learned patterns from past successes")
+                    strategies.extend(learned_strategies)
+
+            # ========== PHASE 1: BRAND-SPECIFIC PATTERNS (If brand detected) ==========
+            if self.brand_detected and BRAND_KNOWLEDGE_AVAILABLE:
+                # Detect element type from description
+                element_type = None
+                context = None
+
+                if any(word in description for word in ['submit', 'payment', 'pay']):
+                    element_type = "submit_button"
+                    context = "checkout"
+                elif any(word in description for word in ['menu', 'nav', 'dropdown']):
+                    element_type = "navigation_menu"
+                    context = "navigation"
+
+                if element_type:
+                    brand_selectors = get_brand_specific_selector(self.current_brand, element_type, context)
+                    for selector in brand_selectors:
+                        # Determine selector type (xpath or css)
+                        if selector.startswith('//') or selector.startswith('(//'):
+                            strategies.insert(0, ('xpath', selector))
+                        else:
+                            strategies.insert(0, ('css', selector))
+
+                    if brand_selectors:
+                        logger.info(f"   🎯 Added {len(brand_selectors)} brand-specific selectors for {self.current_brand}")
+
+            # Strategy 1: Extract quoted text (both single and double quotes)
+            quoted = re.findall(r'"([^"]+)"', step.description)
+            quoted += re.findall(r"'([^']+)'", step.description)
+            
+            if quoted:
+                for target_text in quoted:
+                    target_lower = target_text.lower()
+                    target_normalized = ' '.join(target_text.lower().split())  # Normalize whitespace
+
+                    # PRIORITY 0: Ultra-specific payment/submit button detection
+                    # Try these FIRST for payment-related actions to avoid false positives
+                    if any(payment_word in target_normalized for payment_word in ['submit', 'payment', 'pay', 'checkout', 'purchase', 'buy', 'complete', 'confirm', 'proceed']):
+                        # HIGHEST PRIORITY: Proven pattern for submit buttons in card/summary contexts with nested spans
+                        # Pattern: //div[@class='card']//div[contains(@class, 'submit-btn')]//span[contains(text(),"TEXT")]
+                        strategies.append(('xpath', f"//div[@class='card']//div[contains(@class, 'submit-btn')]//span[contains(text(),'{target_text}')]"))
+                        strategies.append(('xpath', f"//div[contains(@class, 'card')]//div[contains(@class, 'submit')]//span[contains(text(),'{target_text}')]"))
+                        strategies.append(('xpath', f"//div[contains(@class, 'summary')]//div[contains(@class, 'submit')]//span[contains(text(),'{target_text}')]"))
+
+                        # Exact match with form context
+                        strategies.append(('xpath', f"//form//button[translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='{target_normalized}']"))
+                        strategies.append(('xpath', f"//form//input[@type='submit' and translate(normalize-space(@value), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='{target_normalized}']"))
+                        # Button with submit type
+                        strategies.append(('xpath', f"//button[@type='submit' and contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{target_normalized}')]"))
+                        # Button in payment/checkout context
+                        strategies.append(('xpath', f"//*[contains(@class, 'payment') or contains(@class, 'checkout')]//button[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{target_normalized}')]"))
+                        strategies.append(('xpath', f"//*[contains(@id, 'payment') or contains(@id, 'checkout')]//button[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{target_normalized}')]"))
+                        # Button with primary/submit classes
+                        strategies.append(('xpath', f"//button[contains(@class, 'btn-primary') and contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{target_normalized}')]"))
+                        strategies.append(('xpath', f"//button[contains(@class, 'submit') and contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{target_normalized}')]"))
+
+                    # PRIORITY 1: Visible dropdown/submenu items (for navigation after hover)
+                    # These should be tried FIRST when clicking after hovering on a menu
+                    strategies.append(('xpath', f"//section[contains(@class, 'dropdown') or contains(@id, 'dropdown')]//a[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{target_normalized}')]"))
+                    strategies.append(('xpath', f"//div[contains(@class, 'dropdown-menu') and contains(@class, 'show')]//a[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{target_normalized}')]"))
+                    strategies.append(('xpath', f"//ul[contains(@class, 'dropdown-menu')]//a[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{target_normalized}')]"))
+                    strategies.append(('xpath', f"//nav//section//a[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{target_normalized}')]"))
+                    strategies.append(('xpath', f"//header//section//a[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{target_normalized}')]"))
+                    strategies.append(('xpath', f"//*[@role='menu']//a[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{target_normalized}')]"))
+                    strategies.append(('xpath', f"//*[@role='menuitem' and contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{target_normalized}')]"))
+
+                    # PRIORITY 2: Exact match with normalize-space (handles nested elements correctly)
+                    # Using . instead of text() captures ALL text content including nested elements
+                    strategies.append(('xpath', f"//button[translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='{target_normalized}']"))
+                    strategies.append(('xpath', f"//input[@type='submit' and translate(normalize-space(@value), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='{target_normalized}']"))
+                    strategies.append(('xpath', f"//input[@type='button' and translate(normalize-space(@value), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='{target_normalized}']"))
+                    strategies.append(('xpath', f"//a[translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='{target_normalized}']"))
+                    strategies.append(('xpath', f"//*[@role='button' and translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='{target_normalized}']"))
+
+                    # PRIORITY 3: Contains match with normalize-space (partial match)
+                    strategies.append(('xpath', f"//button[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{target_normalized}')]"))
+                    strategies.append(('xpath', f"//input[@type='submit' and contains(translate(normalize-space(@value), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{target_normalized}')]"))
+                    strategies.append(('xpath', f"//input[@type='button' and contains(translate(normalize-space(@value), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{target_normalized}')]"))
+                    strategies.append(('xpath', f"//a[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{target_normalized}')]"))
+                    strategies.append(('xpath', f"//*[@role='button' and contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{target_normalized}')]"))
+                    strategies.append(('xpath', f"//div[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{target_normalized}') and (@onclick or @role='button')]"))
+                    strategies.append(('xpath', f"//span[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{target_normalized}') and (@onclick or @role='button')]"))
+
+                    # Accessibility attributes
+                    strategies.append(('xpath', f"//*[translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='{target_text.lower()}']"))
+                    strategies.append(('xpath', f"//*[contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{target_text.lower()}')]"))
+                    strategies.append(('xpath', f"//*[contains(translate(@title, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{target_text.lower()}')]"))
+                    
+                    # Data attributes (test-friendly)
+                    strategies.append(('xpath', f"//*[@data-testid='{target_text}' or @data-test='{target_text}' or @data-qa='{target_text}']"))
+                    
+                    # ID/name attributes
+                    strategies.append(('xpath', f"//*[contains(translate(@id, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{target_text.lower()}')]"))
+                    strategies.append(('xpath', f"//*[contains(translate(@name, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{target_text.lower()}')]"))
+                    
+                    # JavaScript buttons (span/div with onclick)
+                    strategies.append(('xpath', f"//span[@onclick and contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{target_text.lower()}')]"))
+                    strategies.append(('xpath', f"//div[@onclick and contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{target_text.lower()}')]"))
+                    
+                    # Selenium native
+                    strategies.append(('link', target_text))
+                    strategies.append(('partial_link', target_text))
+
+            # Strategy 2: Key action words with ENHANCED payment button detection
+            # CRITICAL: Exclude chat/support buttons to avoid clicking wrong elements
+            key_words = ['submit', 'payment', 'continue', 'checkout', 'button', 'link', 'menu', 'explore', 'plan', 'select', 'buy', 'purchase', 'proceed', 'confirm', 'next', 'finish', 'complete', 'accept', 'agree']
+
+            # Build exclusion criteria for chat/support elements
+            chat_exclusions = "and not(contains(translate(@class, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'chat')) " \
+                            "and not(contains(translate(@class, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'support')) " \
+                            "and not(contains(translate(@class, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'help')) " \
+                            "and not(contains(translate(@class, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'livechat')) " \
+                            "and not(contains(translate(@id, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'chat')) " \
+                            "and not(contains(translate(@id, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'support')) " \
+                            "and not(contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'chat')) " \
+                            "and not(contains(translate(@title, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'chat'))"
+
             for word in key_words:
                 if word in description:
-                    strategies.append(('xpath', f"//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{word}')]"))
-                    strategies.append(('xpath', f"//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{word}')]"))
+                    # PRIORITY: For payment/submit actions, use highly specific selectors first
+                    if word in ['submit', 'payment', 'checkout', 'purchase', 'buy', 'proceed', 'confirm', 'complete']:
+                        # Ultra-specific submit button detection
+                        strategies.append(('xpath', f"//button[@type='submit' and contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{word}') {chat_exclusions}]"))
+                        strategies.append(('xpath', f"//input[@type='submit' and contains(translate(@value, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{word}') {chat_exclusions}]"))
+                        strategies.append(('xpath', f"//button[contains(translate(@class, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{word}') and contains(translate(@class, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'btn') {chat_exclusions}]"))
+                        strategies.append(('xpath', f"//form//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{word}') {chat_exclusions}]"))
 
-            # Strategy 3: Use captured locators from DOM snapshot
+                    # Exact text match with chat exclusions and normalize-space (highest priority)
+                    strategies.append(('xpath', f"//button[translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='{word}' {chat_exclusions}]"))
+                    strategies.append(('xpath', f"//input[@type='submit' and translate(normalize-space(@value), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='{word}' {chat_exclusions}]"))
+                    strategies.append(('xpath', f"//a[translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')='{word}' {chat_exclusions}]"))
+
+                    # Contains text match with chat exclusions and normalize-space
+                    strategies.append(('xpath', f"//button[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{word}') {chat_exclusions}]"))
+                    strategies.append(('xpath', f"//input[@type='submit' and contains(translate(normalize-space(@value), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{word}') {chat_exclusions}]"))
+                    strategies.append(('xpath', f"//a[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{word}') {chat_exclusions}]"))
+                    strategies.append(('xpath', f"//*[@role='button' and contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{word}') {chat_exclusions}]"))
+                    strategies.append(('xpath', f"//div[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{word}') and (@onclick or @role='button') {chat_exclusions}]"))
+                    strategies.append(('xpath', f"//span[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{word}') and (@onclick or @role='button') {chat_exclusions}]"))
+
+                    # ID/Name/Class attribute matches with chat exclusions
+                    strategies.append(('xpath', f"//*[contains(translate(@id, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{word}') {chat_exclusions}]"))
+                    strategies.append(('xpath', f"//*[contains(translate(@name, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{word}') {chat_exclusions}]"))
+                    strategies.append(('xpath', f"//*[contains(translate(@class, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{word}') {chat_exclusions}]"))
+
+            # Strategy 3: Use captured locators
             for locator_name, locator_value in self.captured_locators.items():
                 if any(word in locator_name.lower() for word in description.split()):
                     strategy, value = locator_value.split(':', 1)
@@ -2375,32 +3992,402 @@ class BrowserAutomationManager:
                     if by_type:
                         strategies.append((by_type, value))
 
-            # Try each strategy
+            # Strategy 4: Generic clickables (last resort)
+            strategies.append(('css', 'button:not([disabled])'))
+            strategies.append(('css', 'input[type="submit"]:not([disabled])'))
+            strategies.append(('css', 'input[type="button"]:not([disabled])'))
+            strategies.append(('xpath', '//*[@role="button"]'))
+
+            # Try each strategy with ENHANCED click methods and visibility checks
             for by_type, value in strategies:
                 try:
                     if isinstance(by_type, str):
                         by_type = self._get_by_type(by_type)
 
+                    # Wait for element to be present
                     element = WebDriverWait(self.driver, 5).until(
-                        EC.element_to_be_clickable((by_type, value))
+                        EC.presence_of_element_located((by_type, value))
                     )
-                    element.click()
+                    
+                    # Verify element is actually visible and interactable
+                    if not element.is_displayed():
+                        logger.debug(f"Element not visible: {value}")
+                        continue
 
-                    logger.info(f"✅ Clicked element using: {by_type}={value}")
+                    # CRITICAL FIX: For payment/submit actions, verify we're NOT clicking chat/support buttons
+                    if any(action_word in description for action_word in ['submit', 'payment', 'checkout', 'purchase', 'buy', 'proceed', 'confirm']):
+                        elem_class = element.get_attribute('class') or ''
+                        elem_id = element.get_attribute('id') or ''
+                        elem_aria = element.get_attribute('aria-label') or ''
+                        elem_title = element.get_attribute('title') or ''
 
-                    # CAPTURE THE ACTUAL LOCATOR that worked
-                    self._capture_element_locator(element, step, "click", test_case)
+                        # Check if this is a chat/support element
+                        chat_indicators = ['chat', 'support', 'help', 'livechat', 'intercom', 'zendesk', 'messenger']
+                        elem_combined = f"{elem_class} {elem_id} {elem_aria} {elem_title}".lower()
 
-                    return True, f"Successfully clicked: {value}"
+                        if any(indicator in elem_combined for indicator in chat_indicators):
+                            logger.debug(f"Skipping chat/support element: {elem_class} {elem_id}")
+                            continue
 
-                except Exception:
+                    # Scroll into view with better positioning (optimized speed)
+                    self.driver.execute_script("""
+                        arguments[0].scrollIntoView({behavior: 'auto', block: 'center'});
+                        window.scrollBy(0, -100);
+                    """, element)
+                    time.sleep(0.2)  # Reduced from 0.5 to 0.2 for faster execution
+
+                    # Wait for element to be clickable (not obscured)
+                    try:
+                        WebDriverWait(self.driver, 3).until(EC.element_to_be_clickable((by_type, value)))
+                    except:
+                        logger.debug(f"Element not clickable yet: {value}")
+
+                    # Try MULTIPLE click methods with priority order
+                    click_success = False
+                    click_method = ""
+                    
+                    # Method 1: Wait for clickable + standard click
+                    try:
+                        clickable = WebDriverWait(self.driver, 3).until(EC.element_to_be_clickable((by_type, value)))
+                        clickable.click()
+                        click_success = True
+                        click_method = "standard"
+                    except Exception as e:
+                        logger.debug(f"Standard click failed: {e}")
+
+                    # Method 2: ActionChains (handles overlays better)
+                    if not click_success:
+                        try:
+                            ActionChains(self.driver).move_to_element(element).pause(0.3).click().perform()
+                            click_success = True
+                            click_method = "ActionChains"
+                        except Exception as e:
+                            logger.debug(f"ActionChains failed: {e}")
+
+                    # Method 3: JavaScript click (bypasses all overlays)
+                    if not click_success:
+                        try:
+                            self.driver.execute_script("arguments[0].click();", element)
+                            click_success = True
+                            click_method = "JavaScript"
+                        except Exception as e:
+                            logger.debug(f"JavaScript click failed: {e}")
+
+                    # Method 4: Mousedown/Mouseup events (for custom event handlers)
+                    if not click_success:
+                        try:
+                            self.driver.execute_script("""
+                                var element = arguments[0];
+                                element.dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));
+                                element.dispatchEvent(new MouseEvent('mouseup', {bubbles: true}));
+                                element.dispatchEvent(new MouseEvent('click', {bubbles: true}));
+                            """, element)
+                            click_success = True
+                            click_method = "mouse_events"
+                        except Exception as e:
+                            logger.debug(f"Mouse events failed: {e}")
+
+                    # Method 5: Force click (removes disabled and pointer-events)
+                    if not click_success:
+                        try:
+                            self.driver.execute_script("""
+                                var element = arguments[0];
+                                element.removeAttribute('disabled');
+                                element.style.pointerEvents = 'auto';
+                                element.click();
+                            """, element)
+                            click_success = True
+                            click_method = "force"
+                        except Exception as e:
+                            logger.debug(f"Force click failed: {e}")
+
+                    if click_success:
+                        logger.info(f"✅ Clicked using {click_method}: {by_type}={value}")
+
+                        # 🧠 LEARN FROM SUCCESS: Auto-learn this pattern for future use
+                        try:
+                            element_text = element.text.strip() if element.text else ""
+                            # Determine context from description
+                            if any(word in description for word in ['submit', 'payment', 'pay', 'checkout', 'purchase']):
+                                context = 'submit_payment'
+                            elif any(word in description for word in ['click', 'button']):
+                                context = 'button_click'
+                            elif any(word in description for word in ['menu', 'nav', 'dropdown']):
+                                context = 'navigation'
+                            else:
+                                context = 'general'
+
+                            # Learn the pattern if it's an XPath
+                            if by_type == By.XPATH and isinstance(value, str):
+                                page_url = self.driver.current_url if hasattr(self, 'driver') else None
+                                self.locator_learner.learn_from_success(value, element_text, context, page_url)
+                                logger.debug(f"🧠 Pattern learned and saved for future use")
+                        except Exception as learn_error:
+                            logger.debug(f"Could not learn from success: {learn_error}")
+
+                        time.sleep(0.3)  # Reduced from 0.5 for faster execution
+                        self._capture_element_locator(element, step, "click", test_case)
+                        return True, f"Clicked using {click_method}: {value}"
+
+                except Exception as e:
+                    logger.debug(f"Strategy failed ({by_type}={value}): {str(e)[:80]}")
                     continue
 
-            return False, f"Could not find clickable element for: {step.description}"
+            # IFRAME CHECK: Button might be in an iframe (common for payment forms)
+            logger.info("🔍 Checking for iframes...")
+            try:
+                iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
+                if iframes:
+                    logger.info(f"📦 Found {len(iframes)} iframe(s), attempting to search within them...")
+
+                    for iframe_idx, iframe in enumerate(iframes):
+                        try:
+                            # Switch to iframe
+                            self.driver.switch_to.frame(iframe)
+                            logger.debug(f"   Switched to iframe {iframe_idx + 1}/{len(iframes)}")
+
+                            # Try a few high-priority strategies within the iframe
+                            iframe_strategies = []
+
+                            # Extract quoted text
+                            import re
+                            quoted = re.findall(r'"([^"]+)"', step.description)
+                            if quoted:
+                                target_text = quoted[0]
+                                target_normalized = ' '.join(target_text.lower().split())
+
+                                # Try most common payment button patterns in iframe
+                                iframe_strategies.append(('xpath', f"//button[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{target_normalized}')]"))
+                                iframe_strategies.append(('xpath', f"//input[@type='submit' and contains(translate(normalize-space(@value), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{target_normalized}')]"))
+                                iframe_strategies.append(('xpath', f"//*[@type='submit']"))
+                                iframe_strategies.append(('css', 'button[type="submit"]'))
+                                iframe_strategies.append(('css', 'input[type="submit"]'))
+
+                            # Try each iframe strategy
+                            for by_type, value in iframe_strategies:
+                                try:
+                                    if isinstance(by_type, str):
+                                        by_type = self._get_by_type(by_type)
+
+                                    element = WebDriverWait(self.driver, 2).until(
+                                        EC.presence_of_element_located((by_type, value))
+                                    )
+
+                                    if element.is_displayed():
+                                        # Try to click
+                                        self.driver.execute_script("arguments[0].click();", element)
+                                        logger.info(f"✅ SUCCESS: Clicked button in iframe {iframe_idx + 1} using {by_type}={value}")
+
+                                        # Switch back to default content
+                                        self.driver.switch_to.default_content()
+
+                                        self._capture_element_locator(element, step, "click", test_case)
+                                        return True, f"Clicked button in iframe {iframe_idx + 1}"
+
+                                except Exception as e:
+                                    continue
+
+                            # Switch back to default content before trying next iframe
+                            self.driver.switch_to.default_content()
+
+                        except Exception as iframe_error:
+                            logger.debug(f"   Error in iframe {iframe_idx + 1}: {str(iframe_error)[:50]}")
+                            # Make sure we're back to default content
+                            try:
+                                self.driver.switch_to.default_content()
+                            except:
+                                pass
+
+                    logger.info("   No matching buttons found in any iframes")
+                else:
+                    logger.debug("   No iframes detected on page")
+
+            except Exception as iframe_check_error:
+                logger.debug(f"Iframe check error: {str(iframe_check_error)[:50]}")
+                # Ensure we're back to default content
+                try:
+                    self.driver.switch_to.default_content()
+                except:
+                    pass
+
+            # CRITICAL FALLBACK: If all strategies failed, do an intelligent search
+            logger.warning(f"⚠️  All {len(strategies)} strategies failed. Attempting intelligent fallback...")
+
+            try:
+                # Get ALL potentially clickable elements on the page
+                all_buttons = self.driver.execute_script("""
+                    function getAllClickableElements() {
+                        const elements = [];
+                        
+                        // Get all standard clickable elements
+                        const selectors = [
+                            'button', 'input[type="submit"]', 'input[type="button"]',
+                            'a', '[role="button"]', '[onclick]',
+                            'div[class*="btn"]', 'span[class*="btn"]',
+                            'div[class*="button"]', 'span[class*="button"]'
+                        ];
+                        
+                        selectors.forEach(selector => {
+                            try {
+                                document.querySelectorAll(selector).forEach(el => {
+                                    const text = (el.textContent || el.value || '').trim();
+                                    const isVisible = el.offsetWidth > 0 && el.offsetHeight > 0;
+                                    
+                                    if (text || el.value) {
+                                        elements.push({
+                                            tag: el.tagName.toLowerCase(),
+                                            text: text || el.value || '',
+                                            id: el.id || '',
+                                            className: el.className || '',
+                                            visible: isVisible,
+                                            type: el.type || '',
+                                            ariaLabel: el.getAttribute('aria-label') || '',
+                                            dataTestId: el.getAttribute('data-testid') || ''
+                                        });
+                                    }
+                                });
+                            } catch (e) {}
+                        });
+                        
+                        return elements;
+                    }
+                    
+                    return getAllClickableElements();
+                """)
+
+                if all_buttons:
+                    logger.info(f"📋 Found {len(all_buttons)} total clickable elements on page")
+
+                    # Extract target text from description
+                    import re
+                    quoted = re.findall(r'"([^"]+)"', step.description)
+                    target_text = quoted[0].lower() if quoted else ''
+
+                    # Also check for key words in description
+                    description_words = [word.lower() for word in step.description.split() if len(word) > 3]
+
+                    logger.info(f"🔍 Searching for target text: '{target_text}' or words: {description_words}")
+
+                    # Find best matches
+                    matches = []
+                    for idx, btn in enumerate(all_buttons):
+                        btn_text_lower = btn['text'].lower()
+                        match_score = 0
+                        match_reasons = []
+
+                        # Exact match (highest score)
+                        if target_text and btn_text_lower == target_text:
+                            match_score = 100
+                            match_reasons.append(f"exact match: '{btn['text']}'")
+                        # Contains match
+                        elif target_text and target_text in btn_text_lower:
+                            match_score = 80
+                            match_reasons.append(f"contains '{target_text}'")
+                        # Word match
+                        elif any(word in btn_text_lower for word in description_words):
+                            matching_words = [w for w in description_words if w in btn_text_lower]
+                            match_score = 50 + (len(matching_words) * 10)
+                            match_reasons.append(f"matches words: {matching_words}")
+
+                        # Boost visible elements
+                        if match_score > 0 and btn['visible']:
+                            match_score += 10
+                            match_reasons.append("visible")
+
+                        if match_score > 0:
+                            matches.append({
+                                'index': idx,
+                                'score': match_score,
+                                'button': btn,
+                                'reasons': match_reasons
+                            })
+
+                    if matches:
+                        # Sort by score (highest first)
+                        matches.sort(key=lambda x: x['score'], reverse=True)
+
+                        logger.info(f"✨ Found {len(matches)} potential matches:")
+                        for match in matches[:5]:  # Show top 5
+                            btn = match['button']
+                            logger.info(f"   {match['score']}pts: [{btn['tag']}] '{btn['text'][:50]}' - {', '.join(match['reasons'])}")
+
+                        # Try clicking the best match
+                        best_match = matches[0]
+                        best_btn = best_match['button']
+
+                        logger.info(f"🎯 Attempting to click best match (score: {best_match['score']})")
+
+                        # Try to find and click by text
+                        try:
+                            # Build a comprehensive XPath for this exact element
+                            search_text = best_btn['text']
+                            strategies_to_try = []
+
+                            # Strategy 1: By exact visible text
+                            if search_text:
+                                strategies_to_try.append(('xpath', f"//*[normalize-space(.)='{search_text}']"))
+                                strategies_to_try.append(('xpath', f"//button[normalize-space(.)='{search_text}']"))
+                                strategies_to_try.append(('xpath', f"//input[@value='{search_text}']"))
+
+                            # Strategy 2: By ID if available
+                            if best_btn['id']:
+                                strategies_to_try.append(('id', best_btn['id']))
+
+                            # Strategy 3: By data-testid if available
+                            if best_btn['dataTestId']:
+                                strategies_to_try.append(('css', f"[data-testid='{best_btn['dataTestId']}']"))
+
+                            # Strategy 4: By aria-label if available
+                            if best_btn['ariaLabel']:
+                                strategies_to_try.append(('xpath', f"//*[@aria-label='{best_btn['ariaLabel']}']"))
+
+                            for by_type, value in strategies_to_try:
+                                try:
+                                    if isinstance(by_type, str):
+                                        by_type = self._get_by_type(by_type)
+
+                                    element = WebDriverWait(self.driver, 3).until(
+                                        EC.presence_of_element_located((by_type, value))
+                                    )
+
+                                    # Scroll into view
+                                    self.driver.execute_script(
+                                        "arguments[0].scrollIntoView({behavior: 'auto', block: 'center'});",
+                                        element
+                                    )
+                                    time.sleep(0.3)
+
+                                    # Try JavaScript click (most reliable for fallback)
+                                    self.driver.execute_script("arguments[0].click();", element)
+
+                                    logger.info(f"✅ FALLBACK SUCCESS: Clicked using {by_type}={value}")
+                                    self._capture_element_locator(element, step, "click", test_case)
+                                    return True, f"Clicked using intelligent fallback: {best_btn['text'][:30]}"
+
+                                except Exception as e:
+                                    logger.debug(f"Fallback strategy failed: {str(e)[:50]}")
+                                    continue
+
+                            logger.warning(f"❌ Could not click best match even with direct strategies")
+
+                        except Exception as e:
+                            logger.warning(f"❌ Fallback click failed: {str(e)}")
+
+                    else:
+                        logger.warning(f"⚠️  No text matches found. Available buttons on page:")
+                        for btn in all_buttons[:10]:  # Show first 10
+                            logger.info(f"   [{btn['tag']}] '{btn['text'][:50]}' (visible: {btn['visible']})")
+
+                else:
+                    logger.warning("⚠️  No clickable elements found on page at all!")
+
+            except Exception as fallback_error:
+                logger.error(f"❌ Intelligent fallback failed: {str(fallback_error)}")
+
+            return False, f"Could not find clickable element for: {step.description}. Tried {len(strategies)} strategies + intelligent fallback."
 
         except Exception as e:
             return False, f"Click error: {str(e)}"
-
     async def _smart_hover(self, step: TestStep, test_case: TestCase) -> Tuple[bool, str]:
         """Smart hover with AI-powered element finding using ActionChains"""
         try:
@@ -2454,9 +4441,21 @@ class BrowserAutomationManager:
                     actions = ActionChains(self.driver)
                     actions.move_to_element(element).perform()
 
-                    # Small pause to let hover effects activate
+                    # Wait longer for dropdown menus to appear and become fully visible
                     import time
-                    time.sleep(0.5)
+                    time.sleep(0.6)  # Optimized from 1.0 to 0.6 seconds for faster execution
+
+                    # Additional check: wait for dropdown/submenu to be visible
+                    try:
+                        # Check if a dropdown menu appeared after hover
+                        WebDriverWait(self.driver, 2).until(
+                            lambda d: d.find_elements(By.XPATH, "//section[contains(@class, 'dropdown')] | //div[contains(@class, 'dropdown-menu')] | //ul[contains(@class, 'dropdown')]")
+                        )
+                        logger.info(f"✅ Dropdown menu appeared after hover")
+                        time.sleep(0.2)  # Optimized from 0.3 to 0.2 for faster execution
+                    except:
+                        # No dropdown detected, that's okay
+                        pass
 
                     logger.info(f"✅ Hovered element using: {by_type}={value}")
 
@@ -2533,13 +4532,16 @@ class BrowserAutomationManager:
                     ])
 
                     if is_address_field:
-                        # Optimized wait for autocomplete dropdown - reduced from 1s to 0.3s
-                        time.sleep(0.3)
+                        logger.info(f"      🏠 Address field detected: {field_name}")
 
-                        # Try to find and select from address dropdown
+                        # CRITICAL: Wait and handle dropdown BEFORE proceeding
                         dropdown_selected = await self._handle_address_dropdown(element)
                         if dropdown_selected:
-                            logger.info(f"✅ Selected address from dropdown for field: {field_name}")
+                            logger.info(f"      ✅ Address selected from Google Places dropdown")
+                            # Extra wait to ensure selection is processed
+                            time.sleep(0.5)
+                        else:
+                            logger.warning(f"      ⚠️ No dropdown selection made - manual value kept")
 
                     logger.info(f"✅ Input text using: {by_type}={value}")
 
@@ -2556,9 +4558,41 @@ class BrowserAutomationManager:
         except Exception as e:
             return False, f"Input error: {str(e)}"
 
+    def _dismiss_remaining_dropdown(self, input_element) -> None:
+        """
+        Helper function to dismiss any remaining Google Places dropdown after selection
+        Ensures dropdown doesn't block subsequent field interactions
+
+        Args:
+            input_element: The address input field element
+        """
+        try:
+            from selenium.webdriver.common.by import By
+            from selenium.webdriver.common.keys import Keys
+
+            # Check if dropdown still visible
+            visible_dropdowns = self.driver.find_elements(By.CSS_SELECTOR, '.pac-container:not([style*="display: none"])')
+            if visible_dropdowns and any(dd.is_displayed() for dd in visible_dropdowns):
+                logger.debug(f"      🧹 Dismissing remaining dropdown...")
+                # Try sending ESC to input field
+                try:
+                    input_element.send_keys(Keys.ESCAPE)
+                    time.sleep(0.2)
+                except:
+                    # If ESC fails, try clicking elsewhere
+                    try:
+                        self.driver.execute_script("document.body.click();")
+                        time.sleep(0.2)
+                    except:
+                        pass
+        except Exception as e:
+            logger.debug(f"      Dropdown dismiss error: {str(e)[:50]}")
+
     async def _handle_address_dropdown(self, input_element) -> bool:
         """
-        Handle address autocomplete dropdown selection
+        Handle late-appearing Google Places dropdown with ENHANCED detection
+        Waits for dropdown to appear even after other fields are filled
+        Uses multiple detection strategies and selection methods
 
         Args:
             input_element: The address input field element
@@ -2568,137 +4602,192 @@ class BrowserAutomationManager:
         """
         try:
             from selenium.webdriver.common.by import By
-            from selenium.webdriver.support.ui import WebDriverWait
-            from selenium.webdriver.support import expected_conditions as EC
             from selenium.webdriver.common.keys import Keys
+            import time
 
-            logger.info("      🔍 Searching for address dropdown...")
+            logger.info("      🔍 Enhanced Google Places dropdown detection...")
 
-            # Optimized dropdown wait - reduced from 2s to 0.5s
-            time.sleep(0.5)
+            # CRITICAL: Extended initial wait for late-appearing dropdowns
+            time.sleep(2.0)
 
-            # Common selectors for address autocomplete dropdowns
-            dropdown_selectors = [
-                '[role="listbox"]',
-                '.autocomplete-dropdown',
-                '.pac-container',  # Google Places autocomplete
-                '.address-suggestions',
-                '[class*="dropdown"]',
-                '[class*="suggestion"]',
-                '[class*="autocomplete"]',
-                'ul.suggestions',
-                '.dropdown-menu',
-                '[id*="dropdown"]',
-                '[id*="suggestions"]',
-                '[id*="autocomplete"]'
-            ]
+            # Extended polling time to handle very late dropdowns
+            max_wait = 10.0
+            check_interval = 0.2
+            elapsed = 0
 
-            # Try to find visible dropdown with multiple attempts
-            for attempt in range(3):
-                logger.debug(f"      Attempt {attempt + 1} to find dropdown...")
+            dropdown_element = None
+            pac_items = []
 
-                for selector in dropdown_selectors:
-                    try:
-                        dropdowns = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                        logger.debug(f"      Found {len(dropdowns)} elements matching '{selector}'")
+            logger.info(f"      ⏳ Polling for up to {max_wait}s (handles late appearance)...")
 
-                        visible_dropdown = None
+            while elapsed < max_wait:
+                time.sleep(check_interval)
+                elapsed += check_interval
 
-                        for dropdown in dropdowns:
-                            try:
-                                if dropdown.is_displayed():
-                                    visible_dropdown = dropdown
-                                    logger.info(f"      ✓ Found visible dropdown using selector: {selector}")
+                try:
+                    # Try multiple selector strategies for Google Places
+                    selectors = [
+                        '.pac-container',
+                        '[class*="pac-container"]',
+                        '.pac-container:not([style*="display: none"])',
+                        '[role="listbox"]',
+                        '.google-places-panel'
+                    ]
+
+                    containers = []
+                    for selector in selectors:
+                        try:
+                            found = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                            containers.extend(found)
+                        except:
+                            continue
+
+                    for container in containers:
+                        try:
+                            if container.is_displayed() and container.size.get('height', 0) > 0:
+                                # Try multiple item selectors
+                                item_selectors = [
+                                    '.pac-item',
+                                    '[class*="pac-item"]',
+                                    '[role="option"]',
+                                    '.pac-item-query'
+                                ]
+
+                                items = []
+                                for item_sel in item_selectors:
+                                    try:
+                                        found_items = container.find_elements(By.CSS_SELECTOR, item_sel)
+                                        items.extend(found_items)
+                                    except:
+                                        continue
+
+                                visible_items = [item for item in items if
+                                                 item.is_displayed() and item.size.get('height', 0) > 0]
+
+                                if visible_items:
+                                    dropdown_element = container
+                                    pac_items = visible_items
+                                    logger.info(f"      ✅ FOUND after {elapsed:.1f}s with {len(pac_items)} items!")
                                     break
-                            except:
-                                continue
+                        except:
+                            continue
 
-                        if visible_dropdown:
-                            # Find selectable options within the dropdown
-                            option_selectors = [
-                                '[role="option"]',
-                                'li',
-                                '.suggestion-item',
-                                '.pac-item',
-                                '[class*="option"]',
-                                '[class*="item"]',
-                                'a',
-                                'div[tabindex]'
-                            ]
+                    if dropdown_element and pac_items:
+                        break
 
-                            for opt_selector in option_selectors:
-                                try:
-                                    options = visible_dropdown.find_elements(By.CSS_SELECTOR, opt_selector)
-                                    clickable_options = [opt for opt in options if opt.is_displayed()]
+                    if elapsed % 2.0 == 0:
+                        logger.debug(f"      ⏳ Still waiting... ({elapsed:.1f}s / {max_wait}s)")
 
-                                    logger.debug(f"      Found {len(clickable_options)} clickable options")
+                except:
+                    continue
 
-                                    if clickable_options:
-                                        # Select the first valid option
-                                        first_option = clickable_options[0]
-                                        option_text = first_option.text[:50] if first_option.text else "unknown"
+            # If found, try MULTIPLE selection methods
+            if dropdown_element and pac_items:
+                first_item = pac_items[0]
+                item_text = first_item.text[:80] if first_item.text else "[address]"
+                logger.info(f"      🎯 Found dropdown! Selecting: '{item_text}'")
 
-                                        logger.info(f"      🎯 Attempting to select: '{option_text}'")
+                # Method 1: Mousedown event (preferred for Google Places)
+                try:
+                    self.driver.execute_script("""
+                        var evt = new MouseEvent('mousedown', {bubbles: true, cancelable: true});
+                        arguments[0].dispatchEvent(evt);
+                    """, first_item)
+                    time.sleep(0.5)
 
-                                        # Try multiple click methods
-                                        try:
-                                            # Method 1: Direct click
-                                            first_option.click()
-                                            logger.info(f"      ✅ Selected via direct click")
-                                            time.sleep(0.2)  # Reduced from 0.5s
-                                            return True
-                                        except:
-                                            pass
+                    # CRITICAL: Verify dropdown is dismissed after selection
+                    try:
+                        remaining_dropdowns = self.driver.find_elements(By.CSS_SELECTOR, '.pac-container:not([style*="display: none"])')
+                        if remaining_dropdowns:
+                            logger.info(f"      ⚠️ Dropdown still visible after mousedown, sending ESC...")
+                            from selenium.webdriver.common.keys import Keys
+                            input_element.send_keys(Keys.ESCAPE)
+                            time.sleep(0.3)
+                    except:
+                        pass
 
-                                        try:
-                                            # Method 2: JavaScript click
-                                            self.driver.execute_script("arguments[0].click();", first_option)
-                                            logger.info(f"      ✅ Selected via JavaScript click")
-                                            time.sleep(0.2)  # Reduced from 0.5s
-                                            return True
-                                        except:
-                                            pass
+                    logger.info(f"      ✅ SUCCESS: Mousedown event!")
+                    return True
+                except Exception as e:
+                    logger.debug(f"Mousedown failed: {e}")
 
-                                        try:
-                                            # Method 3: Move to element and click
-                                            from selenium.webdriver.common.action_chains import ActionChains
-                                            actions = ActionChains(self.driver)
-                                            actions.move_to_element(first_option).click().perform()
-                                            logger.info(f"      ✅ Selected via ActionChains")
-                                            time.sleep(0.2)  # Reduced from 0.5s
-                                            return True
-                                        except:
-                                            pass
+                # Method 2: Click event
+                try:
+                    self.driver.execute_script("""
+                        var evt = new MouseEvent('click', {bubbles: true, cancelable: true});
+                        arguments[0].dispatchEvent(evt);
+                    """, first_item)
+                    time.sleep(0.5)
+                    self._dismiss_remaining_dropdown(input_element)
+                    logger.info(f"      ✅ SUCCESS: Click event!")
+                    return True
+                except Exception as e:
+                    logger.debug(f"Click event failed: {e}")
 
-                                except Exception as opt_error:
-                                    logger.debug(f"      Option selector '{opt_selector}' failed: {str(opt_error)[:30]}")
-                                    continue
+                # Method 3: Direct Selenium click
+                try:
+                    first_item.click()
+                    time.sleep(0.5)
+                    self._dismiss_remaining_dropdown(input_element)
+                    logger.info(f"      ✅ SUCCESS: Direct click!")
+                    return True
+                except Exception as e:
+                    logger.debug(f"Direct click failed: {e}")
 
-                    except Exception as sel_error:
-                        logger.debug(f"      Selector '{selector}' failed: {str(sel_error)[:30]}")
-                        continue
+                # Method 4: JavaScript click
+                try:
+                    self.driver.execute_script("arguments[0].click();", first_item)
+                    time.sleep(0.5)
+                    self._dismiss_remaining_dropdown(input_element)
+                    logger.info(f"      ✅ SUCCESS: JS click!")
+                    return True
+                except Exception as e:
+                    logger.debug(f"JS click failed: {e}")
 
-                # Optimized retry delay - reduced from 0.5s to 0.2s
-                if attempt < 2:
-                    time.sleep(0.2)
+                # Method 5: ActionChains click
+                try:
+                    from selenium.webdriver.common.action_chains import ActionChains
+                    ActionChains(self.driver).move_to_element(first_item).click().perform()
+                    time.sleep(0.5)
+                    self._dismiss_remaining_dropdown(input_element)
+                    logger.info(f"      ✅ SUCCESS: ActionChains click!")
+                    return True
+                except Exception as e:
+                    logger.debug(f"ActionChains failed: {e}")
 
-            # If no dropdown found, try keyboard navigation (arrow down + enter)
-            logger.info("      🎹 Trying keyboard navigation...")
+            # Fallback: Keyboard navigation (for dropdowns we can't click)
+            logger.info("      🎹 FALLBACK: Trying keyboard navigation...")
             try:
-                input_element.send_keys(Keys.ARROW_DOWN)
-                time.sleep(0.2)  # Reduced from 0.5s
-                input_element.send_keys(Keys.ENTER)
-                logger.info("      ✅ Selected address using keyboard navigation")
-                time.sleep(0.2)  # Reduced from 0.5s
-                return True
-            except Exception as kb_error:
-                logger.debug(f"      Keyboard navigation failed: {str(kb_error)[:50]}")
+                # Re-focus the input element
+                input_element.click()
+                time.sleep(0.3)
 
-            logger.info("      ⚠️  No address dropdown found after all attempts")
+                # Send arrow down to select first option
+                input_element.send_keys(Keys.ARROW_DOWN)
+                time.sleep(0.4)
+
+                # Press Enter to confirm selection
+                input_element.send_keys(Keys.ENTER)
+                time.sleep(0.4)
+                logger.info(f"      ✅ SUCCESS: Keyboard navigation!")
+                return True
+            except Exception as e:
+                logger.debug(f"Keyboard navigation failed: {e}")
+
+            # Last resort: TAB to accept current value
+            try:
+                input_element.send_keys(Keys.TAB)
+                time.sleep(0.3)
+                logger.info(f"      ✅ SUCCESS: TAB accepted!")
+                return True
+            except:
+                pass
+
+            logger.warning("      ⚠️  Dropdown not selected - continuing anyway")
             return False
 
         except Exception as e:
-            logger.debug(f"Address dropdown handling error: {str(e)}")
+            logger.warning(f"      ⚠️  Dropdown handler error: {str(e)[:100]}")
             return False
 
     async def _generate_ai_test_data(self, field_info: Dict[str, str], page_context: str = "") -> str:
@@ -2808,10 +4897,13 @@ class BrowserAutomationManager:
 
 Generate the test data value now:"""
 
-            response = self.azure_client.completion_create(
+            response = track_ai_call(
+                self.azure_client,
+                operation='generate_test_data',
+                func_name='completion_create',
                 prompt=prompt,
                 max_tokens=150,
-                temperature=0.8  # Higher temperature for more variety
+                temperature=0.8
             )
 
             if response and 'choices' in response and len(response['choices']) > 0:
@@ -2821,6 +4913,13 @@ Generate the test data value now:"""
                 # Remove any explanatory text that might have been added
                 if '\n' in generated_value:
                     generated_value = generated_value.split('\n')[0].strip()
+
+                # Safety check: Ensure passwords are max 16 characters
+                if field_type == 'password' or 'password' in field_name.lower() or 'pwd' in field_name.lower():
+                    if len(generated_value) > 16:
+                        generated_value = generated_value[:16]
+                        logger.debug(f"      ✂️  Truncated password to 16 characters")
+
                 logger.info(f"      🤖 AI generated data for '{field_name or field_id}': {generated_value if field_type != 'password' else '***'}")
                 return generated_value
             else:
@@ -3016,10 +5115,13 @@ No explanations, no quotes, just the exact option text.
 
 Your selection:"""
 
-            response = self.azure_client.completion_create(
+            response = track_ai_call(
+                self.azure_client,
+                operation='select_dropdown_option',
+                func_name='completion_create',
                 prompt=prompt,
                 max_tokens=50,
-                temperature=0.3  # Lower temperature for more consistent selection
+                temperature=0.3
             )
 
             if response and 'choices' in response and len(response['choices']) > 0:
@@ -3322,6 +5424,16 @@ Your selection:"""
                     min_val = input_elem.get_attribute('min') or ''
                     max_val = input_elem.get_attribute('max') or ''
 
+                    # OPTIMIZATION: Check if field already has a value BEFORE making AI call
+                    # This prevents duplicate form filling and saves expensive AI calls
+                    current_value = input_elem.get_attribute('value') or ''
+                    if current_value and input_type not in ['checkbox', 'radio', 'hidden']:
+                        # Skip if field already has a meaningful value (not just a placeholder)
+                        if len(current_value) > 2:
+                            logger.info(f"      ⊘ Skipping '{input_name or input_id}' - already has value: {current_value[:30]} (saved AI call)")
+                            fields_skipped += 1
+                            continue
+
                     field_info = {
                         'type': input_type,
                         'name': input_name,
@@ -3336,7 +5448,7 @@ Your selection:"""
                         'max': max_val
                     }
 
-                    # Use AI-powered generation if available
+                    # Use AI-powered generation if available (only called if field needs filling)
                     test_value = await self._generate_ai_test_data(field_info, page_context)
 
                     # CRITICAL: Ensure payment fields always have fallback values with smart detection
@@ -3403,22 +5515,12 @@ Your selection:"""
                         else:
                             logger.info(f"      💳 Using value for payment field '{input_name or input_id}': {test_value if not is_cvv else '***'}")
 
-                    # Check if field already has a value (to avoid re-entering)
-                    # This prevents duplicate form filling
-                    current_value = input_elem.get_attribute('value') or ''
-                    if current_value and input_type not in ['checkbox', 'radio', 'hidden']:
-                        # Skip if field already has a non-empty value
-                        # Exception: Re-fill if it's clearly wrong (like default placeholder values)
-                        if len(current_value) > 2:  # Meaningful value, not just a placeholder
-                            logger.info(f"      ⊘ Skipping '{input_name or input_id}' - already has value: {current_value[:30]}")
-                            fields_skipped += 1
-                            continue
-
+                    # Proceed with filling if we have test_value
                     if test_value and input_type not in ['checkbox', 'radio']:
                         try:
-                            # Scroll element into view
+                            # Scroll element into view (optimized speed)
                             self.driver.execute_script("arguments[0].scrollIntoView(true);", input_elem)
-                            time.sleep(0.3)
+                            time.sleep(0.15)  # Reduced from 0.3 to 0.15 for faster execution
 
                             # For payment fields, try multiple filling methods
                             fill_success = False
@@ -3506,17 +5608,48 @@ Your selection:"""
                                 except Exception as capture_error:
                                     logger.debug(f"      ⚠️ Could not capture locator: {str(capture_error)[:50]}")
 
-                                # Check if this is an address field and handle dropdown
-                                is_address_field = any(keyword in (input_name or '').lower() or keyword in (input_id or '').lower()
-                                                      for keyword in ['address', 'street', 'addr'])
+                                # Check if this is an address field (including billing address) and handle dropdown
+                                is_address_field = any(keyword in (input_name or '').lower() or keyword in (input_id or '').lower() or keyword in (placeholder or '').lower()
+                                                      for keyword in ['address', 'street', 'addr', 'billing', 'shipping', 'location'])
                                 if is_address_field:
-                                    logger.info(f"      🏠 Address field detected, checking for dropdown...")
-                                    time.sleep(0.4)  # Optimized from 1.5s to 0.4s for faster form filling
+                                    logger.info(f"      🏠 Address/Billing field detected: '{input_name or input_id}'")
+                                    logger.info(f"      ⏳ Waiting for Google Places dropdown to appear...")
+
+                                    # CRITICAL: Wait longer for dropdown to appear (billing forms often have delayed dropdowns)
+                                    time.sleep(1.5)  # Extended wait for billing/address dropdowns
+
+                                    # Handle the dropdown and BLOCK until resolved
                                     dropdown_selected = await self._handle_address_dropdown(input_elem)
+
                                     if dropdown_selected:
-                                        logger.info(f"      ✅ Selected address from dropdown for '{input_name or input_id}'")
+                                        logger.info(f"      ✅ Address selected from Google Places dropdown")
+                                        # CRITICAL: Verify dropdown is actually closed before proceeding
+                                        time.sleep(0.5)
+                                        try:
+                                            # Check if dropdown still visible
+                                            visible_dropdowns = self.driver.find_elements(By.CSS_SELECTOR, '.pac-container:not([style*="display: none"])')
+                                            if visible_dropdowns:
+                                                logger.warning(f"      ⚠️ Dropdown still visible after selection! Attempting to dismiss...")
+                                                # Try clicking elsewhere to dismiss
+                                                self.driver.execute_script("document.body.click();")
+                                                time.sleep(0.3)
+                                                # Send ESC key to input field to force close
+                                                from selenium.webdriver.common.keys import Keys
+                                                try:
+                                                    input_elem.send_keys(Keys.ESCAPE)
+                                                    logger.info(f"      ✅ Sent ESC to dismiss dropdown")
+                                                except:
+                                                    pass
+                                                time.sleep(0.3)
+                                            else:
+                                                logger.info(f"      ✅ Dropdown properly closed - safe to proceed")
+                                        except Exception as validation_error:
+                                            logger.debug(f"      Dropdown validation error: {str(validation_error)[:50]}")
                                     else:
-                                        logger.debug(f"      ℹ️  No address dropdown appeared for '{input_name or input_id}'")
+                                        logger.info(f"      ℹ️ No Google Places dropdown detected - value kept as entered")
+                                        # Extra wait to ensure no late-appearing dropdown
+                                        time.sleep(0.5)
+
                         except Exception as fill_error:
                             logger.warning(f"      ✗ Failed to fill '{input_name or input_id}': {str(fill_error)[:50]}")
                             fields_skipped += 1
@@ -3799,15 +5932,17 @@ Your selection:"""
             ]
             return random.choice(formats)
 
-        # PASSWORD fields - strong, varied passwords
+        # PASSWORD fields - strong, varied passwords (MAX 16 characters)
         elif field_type == 'password' or 'password' in context or 'pwd' in context:
-            # Generate strong, realistic passwords
+            # Generate strong, realistic passwords with max 16 character length
             password_patterns = [
-                lambda: f"{random.choice(['Pass', 'Secure', 'Key', 'Auth'])}{random.randint(100,999)}!{random.choice(string.ascii_uppercase)}",
-                lambda: f"{random.choice(REALISTIC_FIRST_NAMES)}{random.randint(1990,2005)}!{random.choice(['#','@','$'])}",
-                lambda: f"{random.choice(['Test','Demo','Auto'])}_{random.choice(string.ascii_uppercase)}{random.randint(10,99)}!",
+                lambda: f"{random.choice(['Pass', 'Secure', 'Key'])}{random.randint(100,999)}!{random.choice(string.ascii_uppercase)}",
+                lambda: f"{random.choice(['Test','Demo','Auto'])}{random.randint(90,99)}!{random.choice(string.ascii_uppercase)}x",
+                lambda: f"Test{random.randint(1000,9999)}@{random.choice(string.ascii_uppercase)}{random.choice(string.ascii_lowercase)}",
             ]
-            return random.choice(password_patterns)()
+            password = random.choice(password_patterns)()
+            # Ensure max 16 characters
+            return password[:16]
 
         # PHONE/TEL fields - varied realistic formats
         elif field_type == 'tel' or any(keyword in context for keyword in ['phone', 'telephone', 'mobile', 'tel', 'cell']):
@@ -4384,6 +6519,12 @@ Your selection:"""
                 return self._generate_basic_bug_report()
 
             # Prepare context for AI analysis
+            # Collect UI/UX context from DOM snapshots
+            ui_ux_contexts = []
+            for snapshot in self.dom_snapshots:
+                if 'ui_ux_context' in snapshot:
+                    ui_ux_contexts.append(snapshot['ui_ux_context'])
+
             context = {
                 'total_steps': len(self.dom_snapshots),
                 'console_errors': len(self.console_errors),
@@ -4393,10 +6534,32 @@ Your selection:"""
                 'validation_issues': self.bug_report['validation_issues'],
                 'accessibility_issues': self.bug_report['accessibility_issues'],
                 'security_issues': self.bug_report['security_issues'],
-                'screenshots': len(self.screenshots)
+                'screenshots': len(self.screenshots),
+                'ui_ux_contexts': ui_ux_contexts
             }
 
+            # Add brand-specific context if available
+            brand_context = ""
+            if self.brand_detected and BRAND_KNOWLEDGE_AVAILABLE:
+                brand_context = get_brand_ai_prompt_enhancement(self.current_brand, "bug_report")
+                logger.info(f"   🎯 Adding brand-specific context for {self.current_brand} to AI analysis")
+
             prompt = f"""Analyze this test automation session and provide a comprehensive bug report from a customer experience perspective.
+
+{brand_context}
+
+Test Execution Summary:
+- Total Steps Executed: {context['total_steps']}
+- Console Errors Found: {context['console_errors']}
+- Network Errors Found: {context['network_errors']}
+- Failed Steps: {len(self.bug_report['functionality_issues'])}
+- Performance Issues: {len(self.bug_report['performance_issues'])}
+- Form Validation Issues: {len(self.bug_report['validation_issues'])}
+- Accessibility Violations: {len(self.bug_report['accessibility_issues'])}
+- Security Vulnerabilities: {len(self.bug_report['security_issues'])}
+
+UI/UX Context (from page analysis):
+{json.dumps(context['ui_ux_contexts'], indent=2) if context['ui_ux_contexts'] else 'Not captured'}
 
 Test Execution Summary:
 - Total Steps Executed: {context['total_steps']}
@@ -4460,7 +6623,10 @@ Format as a professional QA bug report with severity levels."""
                 }
             ]
 
-            response = self.azure_client.chat_completion_create(
+            response = track_ai_call(
+                self.azure_client,
+                operation='generate_bug_report',
+                func_name='chat_completion_create',
                 messages=messages,
                 temperature=0.3,
                 max_tokens=2000
@@ -4470,9 +6636,9 @@ Format as a professional QA bug report with severity levels."""
 
             # Combine with basic stats
             report = f"""# TestPilot Automation Bug Report
-Date: {datetime.now().strftime('%B %d, %Y')}  
-Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  
-Prepared by: AI Quality Centre of Excellence  
+Date: {datetime.now().strftime('%B %d, %Y')}
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+Prepared by: AI Quality Centre of Excellence
 Contact: siddhant.wadhwani@newfold.com
 
 ## AI Analysis
@@ -4521,8 +6687,8 @@ Contact: siddhant.wadhwani@newfold.com
     def _generate_basic_bug_report(self) -> str:
         """Generate basic bug report without AI"""
         report = f"""# TestPilot Automation Bug Report
-Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  
-Prepared by: AI Quality Centre of Excellence  
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+Prepared by: AI Quality Centre of Excellence
 Contact: siddhant.wadhwani@newfold.com
 
 ## Execution Summary
@@ -4877,6 +7043,490 @@ class RecordingParser:
         return True
 
 
+class FlakyTestPredictor:
+    """
+    AI-Powered Proactive Flaky Test Detection
+
+    Detects potential flaky tests DURING generation, not after execution.
+    Uses Azure OpenAI and pattern matching to predict test stability.
+    """
+
+    def __init__(self, azure_client: Optional[Any] = None):
+        self.azure_client = azure_client
+        self.flaky_indicators = {
+            'timing_dependent': ['wait', 'timeout', 'delay', 'sleep', 'pause'],
+            'race_condition': ['race', 'concurrent', 'parallel', 'async', 'eventually'],
+            'external_dependency': ['api', 'external', 'third-party', 'service', 'endpoint'],
+            'dynamic_content': ['dynamic', 'load', 'ajax', 'fetch', 'xhr'],
+            'animation_based': ['animation', 'transition', 'fade', 'slide', 'animate'],
+            'network_dependent': ['network', 'request', 'response', 'http', 'download']
+        }
+
+    async def analyze_test_case_for_flakiness(self, test_case: TestCase) -> Dict[str, Any]:
+        """Analyze test case for potential flakiness before execution"""
+        flakiness_risk = {
+            'risk_level': 'low',
+            'risk_score': 0,
+            'risk_factors': [],
+            'recommendations': []
+        }
+
+        # Analyze each step for flakiness indicators
+        for step in test_case.steps:
+            step_desc_lower = step.description.lower()
+
+            for indicator_type, keywords in self.flaky_indicators.items():
+                matching_keywords = [kw for kw in keywords if kw in step_desc_lower]
+                if matching_keywords:
+                    weight = self._get_indicator_weight(indicator_type)
+                    flakiness_risk['risk_factors'].append({
+                        'type': indicator_type,
+                        'step': step.step_number,
+                        'description': step.description[:100],
+                        'matching_keywords': matching_keywords,
+                        'weight': weight
+                    })
+                    flakiness_risk['risk_score'] += weight
+
+        # Use AI for advanced analysis if available
+        if self.azure_client and AZURE_AVAILABLE:
+            try:
+                ai_analysis = await self._ai_analyze_flakiness(test_case)
+                flakiness_risk['ai_analysis'] = ai_analysis
+                flakiness_risk['risk_score'] += ai_analysis.get('ai_risk_score', 0)
+            except Exception as e:
+                logger.debug(f"AI flakiness analysis skipped: {e}")
+
+        # Calculate final risk level
+        if flakiness_risk['risk_score'] >= 50:
+            flakiness_risk['risk_level'] = 'high'
+        elif flakiness_risk['risk_score'] >= 25:
+            flakiness_risk['risk_level'] = 'medium'
+
+        # Generate actionable recommendations
+        flakiness_risk['recommendations'] = self._generate_resilience_recommendations(flakiness_risk)
+
+        return flakiness_risk
+
+    def _get_indicator_weight(self, indicator_type: str) -> int:
+        """Get weight for each indicator type"""
+        weights = {
+            'timing_dependent': 10,
+            'race_condition': 25,
+            'external_dependency': 15,
+            'dynamic_content': 15,
+            'animation_based': 20,
+            'network_dependent': 12
+        }
+        return weights.get(indicator_type, 5)
+
+    async def _ai_analyze_flakiness(self, test_case: TestCase) -> Dict[str, Any]:
+        """Use Azure OpenAI to analyze test case for flakiness"""
+        prompt = f"""Analyze this test case for potential flakiness and instability issues.
+
+Test Case: {test_case.title}
+Description: {test_case.description}
+
+Steps:
+{chr(10).join(f"{s.step_number}. {s.description}" for s in test_case.steps)}
+
+Identify:
+1. Race conditions or timing issues
+2. External dependencies (APIs, services)
+3. Browser-specific problems
+4. Animation or dynamic content issues
+
+Respond with JSON:
+{{
+    "ai_risk_score": <0-30>,
+    "ai_risk_factors": ["brief factor 1", "brief factor 2"],
+    "ai_recommendations": ["recommendation 1", "recommendation 2"]
+}}"""
+
+        try:
+            response = await self.azure_client.generate_completion(
+                prompt,
+                max_tokens=400,
+                temperature=0.2
+            )
+
+            import json
+            import re
+            # Extract JSON from response
+            json_match = re.search(r'\{[\s\S]*\}', response)
+            if json_match:
+                return json.loads(json_match.group())
+
+            return {'ai_risk_score': 0, 'ai_risk_factors': [], 'ai_recommendations': []}
+
+        except Exception as e:
+            logger.debug(f"AI analysis failed: {e}")
+            return {'ai_risk_score': 0, 'ai_risk_factors': [], 'ai_recommendations': []}
+
+    def _generate_resilience_recommendations(self, risk_data: Dict) -> List[str]:
+        """Generate actionable recommendations to improve test resilience"""
+        recommendations = []
+
+        # Group by type
+        factors_by_type = {}
+        for factor in risk_data['risk_factors']:
+            factor_type = factor['type']
+            if factor_type not in factors_by_type:
+                factors_by_type[factor_type] = []
+            factors_by_type[factor_type].append(factor)
+
+        # Generate recommendations per type
+        for factor_type, factors in factors_by_type.items():
+            if factor_type == 'timing_dependent':
+                recommendations.append(
+                    f"🔧 Replace fixed waits with explicit waits in {len(factors)} step(s)"
+                )
+            elif factor_type == 'dynamic_content':
+                recommendations.append(
+                    f"🔧 Add AJAX/fetch completion waits in {len(factors)} step(s)"
+                )
+            elif factor_type == 'animation_based':
+                recommendations.append(
+                    f"🔧 Wait for animations to complete before interaction in {len(factors)} step(s)"
+                )
+            elif factor_type == 'race_condition':
+                recommendations.append(
+                    f"⚠️ High risk: Review {len(factors)} step(s) for potential race conditions"
+                )
+            elif factor_type == 'external_dependency':
+                recommendations.append(
+                    f"🔧 Add resilience for external dependencies in {len(factors)} step(s)"
+                )
+
+        # Add AI recommendations if available
+        if 'ai_analysis' in risk_data:
+            ai_recs = risk_data['ai_analysis'].get('ai_recommendations', [])
+            recommendations.extend([f"🤖 AI: {rec}" for rec in ai_recs[:3]])
+
+        return recommendations
+
+
+class TestPilotMetrics:
+    """
+    Comprehensive Metrics Tracking for TestPilot
+
+    Tracks:
+    - Test generation metrics
+    - AI usage and costs
+    - Performance metrics
+    - Success rates
+    - ROI calculations
+    """
+
+    def __init__(self):
+        self.metrics_file = os.path.join(ROOT_DIR, 'generated_tests', 'testpilot_metrics.jsonl')
+        os.makedirs(os.path.dirname(self.metrics_file), exist_ok=True)
+
+    def record_generation(self, test_case: TestCase, generation_result: Dict[str, Any]):
+        """Record test generation metrics"""
+        metric = {
+            'timestamp': datetime.now().isoformat(),
+            'test_id': test_case.id,
+            'test_title': test_case.title,
+            'source': test_case.source,
+            'steps_count': len(test_case.steps),
+            'generation_time_seconds': generation_result.get('duration', 0),
+            'ai_calls_count': generation_result.get('ai_calls', 0),
+            'tokens_used': generation_result.get('tokens', 0),
+            'estimated_cost_usd': generation_result.get('cost', 0),
+            'success': generation_result.get('success', False),
+            'flakiness_risk_score': generation_result.get('flakiness_risk', 0),
+            'flakiness_risk_level': generation_result.get('flakiness_risk_level', 'unknown'),
+            'elements_discovered': generation_result.get('elements_discovered', 0),
+            'locators_captured': generation_result.get('locators_captured', 0),
+            'screenshots_captured': generation_result.get('screenshots', 0)
+        }
+
+        try:
+            with open(self.metrics_file, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(metric) + '\n')
+            logger.debug(f"📊 Metrics recorded for {test_case.title}")
+        except Exception as e:
+            logger.warning(f"Failed to record metrics: {e}")
+
+    def get_metrics_summary(self, days: int = 30) -> Dict[str, Any]:
+        """Get comprehensive metrics summary for specified period"""
+        cutoff = datetime.now() - timedelta(days=days)
+
+        metrics = {
+            'period_days': days,
+            'total_tests_generated': 0,
+            'successful_tests': 0,
+            'failed_tests': 0,
+            'total_cost_usd': 0,
+            'total_tokens': 0,
+            'total_ai_calls': 0,
+            'avg_generation_time': 0,
+            'total_steps_generated': 0,
+            'total_elements_discovered': 0,
+            'total_locators_captured': 0,
+            'flakiness_distribution': {'low': 0, 'medium': 0, 'high': 0, 'unknown': 0},
+            'source_distribution': defaultdict(int)
+        }
+
+        generation_times = []
+
+        if os.path.exists(self.metrics_file):
+            try:
+                with open(self.metrics_file, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        try:
+                            metric = json.loads(line.strip())
+                            metric_time = datetime.fromisoformat(metric['timestamp'])
+
+                            if metric_time >= cutoff:
+                                metrics['total_tests_generated'] += 1
+
+                                if metric.get('success'):
+                                    metrics['successful_tests'] += 1
+                                else:
+                                    metrics['failed_tests'] += 1
+
+                                metrics['total_cost_usd'] += metric.get('estimated_cost_usd', 0)
+                                metrics['total_tokens'] += metric.get('tokens_used', 0)
+                                metrics['total_ai_calls'] += metric.get('ai_calls_count', 0)
+                                metrics['total_steps_generated'] += metric.get('steps_count', 0)
+                                metrics['total_elements_discovered'] += metric.get('elements_discovered', 0)
+                                metrics['total_locators_captured'] += metric.get('locators_captured', 0)
+
+                                gen_time = metric.get('generation_time_seconds', 0)
+                                if gen_time > 0:
+                                    generation_times.append(gen_time)
+
+                                risk_level = metric.get('flakiness_risk_level', 'unknown')
+                                metrics['flakiness_distribution'][risk_level] += 1
+
+                                source = metric.get('source', 'unknown')
+                                metrics['source_distribution'][source] += 1
+
+                        except json.JSONDecodeError:
+                            continue
+
+            except Exception as e:
+                logger.warning(f"Failed to read metrics: {e}")
+
+        # Calculate averages
+        if metrics['total_tests_generated'] > 0:
+            metrics['success_rate'] = round(
+                (metrics['successful_tests'] / metrics['total_tests_generated']) * 100, 2
+            )
+            metrics['avg_cost_per_test'] = round(
+                metrics['total_cost_usd'] / metrics['total_tests_generated'], 4
+            )
+            metrics['avg_tokens_per_test'] = round(
+                metrics['total_tokens'] / metrics['total_tests_generated'], 0
+            )
+            metrics['avg_steps_per_test'] = round(
+                metrics['total_steps_generated'] / metrics['total_tests_generated'], 1
+            )
+        else:
+            metrics['success_rate'] = 0
+            metrics['avg_cost_per_test'] = 0
+            metrics['avg_tokens_per_test'] = 0
+            metrics['avg_steps_per_test'] = 0
+
+        if generation_times:
+            metrics['avg_generation_time'] = round(sum(generation_times) / len(generation_times), 2)
+            metrics['min_generation_time'] = round(min(generation_times), 2)
+            metrics['max_generation_time'] = round(max(generation_times), 2)
+
+        return metrics
+
+    def get_cost_analysis(self, days: int = 30) -> Dict[str, Any]:
+        """Get detailed cost analysis"""
+        summary = self.get_metrics_summary(days)
+
+        # Calculate ROI
+        manual_time_per_test_hours = 2  # Average 2 hours manual test creation
+        automated_time_hours = summary['avg_generation_time'] / 3600  # Convert seconds to hours
+        tester_hourly_rate = 50  # Assumed QA hourly rate
+
+        manual_cost = summary['total_tests_generated'] * manual_time_per_test_hours * tester_hourly_rate
+        automation_cost = summary['total_tests_generated'] * automated_time_hours * tester_hourly_rate
+        ai_cost = summary['total_cost_usd']
+
+        total_automation_cost = automation_cost + ai_cost
+        net_savings = manual_cost - total_automation_cost
+        roi_percentage = ((net_savings / total_automation_cost) * 100) if total_automation_cost > 0 else 0
+
+        return {
+            **summary,
+            'cost_analysis': {
+                'manual_cost_usd': round(manual_cost, 2),
+                'automation_labor_cost_usd': round(automation_cost, 2),
+                'ai_cost_usd': round(ai_cost, 2),
+                'total_automation_cost_usd': round(total_automation_cost, 2),
+                'net_savings_usd': round(net_savings, 2),
+                'roi_percentage': round(roi_percentage, 2),
+                'time_saved_hours': round(
+                    (manual_time_per_test_hours * summary['total_tests_generated']) -
+                    (automated_time_hours * summary['total_tests_generated']), 2
+                )
+            }
+        }
+
+
+class LocatorLearningSystem:
+    """
+    Intelligent system that learns from successful locator patterns and auto-generates strategies.
+    Uses pattern recognition to identify what works for different element types.
+    """
+
+    def __init__(self, persistence_file: str = None):
+        self.persistence_file = persistence_file or os.path.join(ROOT_DIR, 'generated_tests', 'locator_patterns.json')
+        self.patterns = self._load_patterns()
+
+    def _load_patterns(self) -> dict:
+        """Load learned patterns from disk"""
+        if os.path.exists(self.persistence_file):
+            try:
+                with open(self.persistence_file, 'r') as f:
+                    return json.load(f)
+            except:
+                pass
+        return {
+            'successful_patterns': [],  # List of {pattern, success_count, context}
+            'pattern_stats': {},  # Stats per pattern type
+            'context_patterns': {}  # Patterns grouped by context (submit, navigation, etc.)
+        }
+
+    def _save_patterns(self):
+        """Persist learned patterns to disk"""
+        try:
+            os.makedirs(os.path.dirname(self.persistence_file), exist_ok=True)
+            with open(self.persistence_file, 'w') as f:
+                json.dump(self.patterns, f, indent=2)
+        except Exception as e:
+            logger.debug(f"Could not save patterns: {e}")
+
+    def learn_from_success(self, xpath: str, element_text: str, context: str, page_url: str = None):
+        """
+        Learn from a successful locator pattern.
+        Extracts the pattern and stores it for future use.
+        """
+        try:
+            # Extract pattern from successful XPath
+            pattern_info = self._extract_pattern(xpath, element_text, context)
+
+            if pattern_info:
+                # Check if pattern already exists
+                existing = next((p for p in self.patterns['successful_patterns']
+                               if p['pattern_template'] == pattern_info['pattern_template']
+                               and p['context'] == context), None)
+
+                if existing:
+                    existing['success_count'] += 1
+                    existing['last_used'] = datetime.now().isoformat()
+                    if page_url:
+                        existing['urls'].add(page_url)
+                else:
+                    pattern_info['success_count'] = 1
+                    pattern_info['created'] = datetime.now().isoformat()
+                    pattern_info['last_used'] = datetime.now().isoformat()
+                    pattern_info['urls'] = {page_url} if page_url else set()
+                    self.patterns['successful_patterns'].append(pattern_info)
+
+                # Update context-specific patterns
+                if context not in self.patterns['context_patterns']:
+                    self.patterns['context_patterns'][context] = []
+
+                self.patterns['context_patterns'][context] = sorted(
+                    self.patterns['successful_patterns'],
+                    key=lambda x: x['success_count'],
+                    reverse=True
+                )[:10]  # Keep top 10 per context
+
+                self._save_patterns()
+                logger.info(f"📚 Learned pattern: {pattern_info['pattern_template']} for context '{context}'")
+
+        except Exception as e:
+            logger.debug(f"Error learning pattern: {e}")
+
+    def _extract_pattern(self, xpath: str, element_text: str, context: str) -> dict:
+        """
+        Extract reusable pattern from successful XPath.
+        Examples:
+        - //div[@class='card']//span[contains(text(),'X')] -> card-span-text pattern
+        - //button[@type='submit'] -> submit-button pattern
+        """
+        import re
+
+        # Analyze XPath structure
+        pattern_info = {
+            'original_xpath': xpath,
+            'context': context,
+            'element_text': element_text
+        }
+
+        # Detect common patterns
+        if "//div[@class='card']" in xpath and "//span" in xpath:
+            pattern_info['pattern_template'] = "card_span_text"
+            pattern_info['structure'] = "//div[@class='card']//...//span[contains(text(),'{TEXT}')]"
+            pattern_info['description'] = "Span with text inside card div"
+
+        elif "//div[contains(@class,'card')]" in xpath and "//div[contains(@class,'submit')]" in xpath:
+            pattern_info['pattern_template'] = "card_submit_div_span"
+            pattern_info['structure'] = "//div[contains(@class,'card')]//div[contains(@class,'submit')]//span[contains(text(),'{TEXT}')]"
+            pattern_info['description'] = "Submit button in card with nested span"
+
+        elif "//div[contains(@class,'summary')]" in xpath and "//div[contains(@class,'submit')]" in xpath:
+            pattern_info['pattern_template'] = "summary_submit_span"
+            pattern_info['structure'] = "//div[contains(@class,'summary')]//div[contains(@class,'submit')]//span[contains(text(),'{TEXT}')]"
+            pattern_info['description'] = "Submit button in summary section with span"
+
+        elif "//button[@type='submit']" in xpath:
+            pattern_info['pattern_template'] = "submit_button_type"
+            pattern_info['structure'] = "//button[@type='submit' and contains(text(),'{TEXT}')]"
+            pattern_info['description'] = "Button with type=submit"
+
+        elif "//form//button" in xpath:
+            pattern_info['pattern_template'] = "form_button"
+            pattern_info['structure'] = "//form//button[contains(text(),'{TEXT}')]"
+            pattern_info['description'] = "Button inside form"
+
+        else:
+            # Generic pattern - extract key parts
+            pattern_info['pattern_template'] = "custom"
+            pattern_info['structure'] = xpath
+            pattern_info['description'] = "Custom pattern"
+
+        return pattern_info
+
+    def generate_strategies(self, target_text: str, context: str) -> list:
+        """
+        Generate smart strategies based on learned patterns.
+        Returns list of (selector_type, xpath) tuples prioritized by success rate.
+        """
+        strategies = []
+
+        # Get patterns for this context
+        context_patterns = self.patterns.get('context_patterns', {}).get(context, [])
+
+        # Also get general patterns
+        all_patterns = sorted(
+            self.patterns.get('successful_patterns', []),
+            key=lambda x: x.get('success_count', 0),
+            reverse=True
+        )[:20]  # Top 20 overall
+
+        # Generate strategies from learned patterns
+        for pattern in context_patterns + all_patterns:
+            try:
+                template = pattern.get('structure', '')
+                if '{TEXT}' in template:
+                    xpath = template.replace('{TEXT}', target_text)
+                    strategies.append(('xpath', xpath))
+            except:
+                pass
+
+        return strategies
+
+
 class TestPilotEngine:
     """Core engine for TestPilot - handles AI conversion and Robot Framework generation"""
 
@@ -4890,6 +7540,10 @@ class TestPilotEngine:
 
         # Cache for scraped website data
         self.website_cache = {}
+
+        # Initialize intelligent locator learning system
+        self.locator_learner = LocatorLearningSystem()
+        logger.info("🧠 Intelligent locator learning system initialized")
 
     def _extract_locators_from_url_with_selenium(self, url: str, keywords: list) -> dict:
         """
@@ -5649,7 +8303,10 @@ Here is the architecture context to consider: {self.architecture_context}
                 }
             ]
 
-            response = self.azure_client.chat_completion_create(
+            response = track_ai_call(
+                self.azure_client,
+                operation='analyze_test_steps',
+                func_name='chat_completion_create',
                 messages=messages,
                 temperature=0.3,
                 max_tokens=2000
@@ -6170,6 +8827,7 @@ This matches the pattern used in tests like:
 
         # Check if we have captured locators from browser automation
         captured_locators = test_case.metadata.get('captured_locators', {})
+        captured_locators_simple = test_case.metadata.get('captured_locators_simple', {})
         has_captured = len(captured_locators) > 0
 
         if has_captured:
@@ -6182,6 +8840,11 @@ This matches the pattern used in tests like:
         else:
             logger.warning(f"⚠️ NO captured locators found in test_case.metadata!")
             logger.warning(f"   test_case.metadata keys: {list(test_case.metadata.keys())}")
+            logger.warning(f"   This means locators were NOT captured during browser execution.")
+            logger.warning(f"   Possible causes:")
+            logger.warning(f"      1. test_case was None during execution")
+            logger.warning(f"      2. Browser automation was not used")
+            logger.warning(f"      3. No interactive elements were found/clicked")
 
         # Extract and enrich locators
         basic_locators = self._extract_locators_from_steps(test_case.steps)
@@ -6192,15 +8855,60 @@ This matches the pattern used in tests like:
             logger.info(f"      ? {name}")
             # Check if this name exists in captured locators
             if name in captured_locators:
-                logger.info(f"        ✅ MATCH FOUND in captured locators!")
+                logger.info(f"        ✅ EXACT MATCH in captured locators!")
             else:
-                logger.info(f"        ❌ NOT FOUND in captured locators")
+                logger.info(f"        ❌ NO EXACT MATCH in captured locators")
                 # Show similar keys
                 similar = [k for k in captured_locators.keys() if name.replace('_locator', '') in k or k.replace('_locator', '') in name]
                 if similar:
-                    logger.info(f"        💡 Similar keys: {similar[:3]}")
+                    logger.info(f"        💡 Similar keys found: {similar[:3]}")
         if len(enriched_locators) > 10:
             logger.info(f"      ... and {len(enriched_locators) - 10} more")
+
+        # Helper function to find captured locator with multiple fallback strategies
+        def find_captured_locator(locator_name: str, step_index: int) -> str:
+            """
+            Try multiple strategies to find a captured locator
+            Returns the locator value or None
+            """
+            # Strategy 1: Exact match (best case)
+            if locator_name in captured_locators:
+                logger.debug(f"      ✅ Exact match for {locator_name}")
+                return captured_locators[locator_name]
+
+            # Strategy 2: Try with step number (backup key)
+            step_number = step_index + 1
+            for action in ['click', 'input', 'hover', 'select']:
+                step_key = f"step_{step_number}_{action}_locator"
+                if step_key in captured_locators:
+                    logger.debug(f"      ✅ Found by step number: {step_key}")
+                    return captured_locators[step_key]
+
+            # Strategy 3: Simplified name match (no underscores)
+            simple_name = locator_name.replace('_', '').lower()
+            if simple_name in captured_locators_simple:
+                logger.debug(f"      ✅ Found by simplified name: {simple_name}")
+                return captured_locators_simple[simple_name]
+
+            # Strategy 4: Partial match (contains)
+            base_name = locator_name.replace('_locator', '')
+            for cap_key, cap_value in captured_locators.items():
+                cap_base = cap_key.replace('_locator', '')
+                if base_name in cap_base or cap_base in base_name:
+                    logger.debug(f"      ✅ Partial match: {locator_name} ~ {cap_key}")
+                    return cap_value
+
+            # Strategy 5: Word-based match (at least 2 common words)
+            name_words = set(locator_name.lower().split('_'))
+            for cap_key, cap_value in captured_locators.items():
+                cap_words = set(cap_key.lower().split('_'))
+                common = name_words & cap_words
+                if len(common) >= 2:  # At least 2 words in common
+                    logger.debug(f"      ✅ Word-based match: {locator_name} ~ {cap_key} (common: {common})")
+                    return cap_value
+
+            logger.debug(f"      ❌ No match found for {locator_name} after all strategies")
+            return None
 
         for i, enriched in enumerate(enriched_locators, 1):
             if len(enriched) == 3:
@@ -6212,8 +8920,9 @@ This matches the pattern used in tests like:
             lines.append(f"# Step {i}: {description}")
 
             # Priority 1: Use captured locator from browser automation (most reliable)
-            if locator_name in captured_locators:
-                captured_value = captured_locators[locator_name]
+            captured_value = find_captured_locator(locator_name, i - 1)
+
+            if captured_value:
                 lines.append(f"{locator_name} = '{captured_value}'  # ✅ CAPTURED during browser automation - VERIFIED WORKING")
                 logger.info(f"   ✅ Using CAPTURED locator for {locator_name}: {captured_value}")
             # Priority 2: Use auto-detected value from web scraping
@@ -6229,12 +8938,18 @@ This matches the pattern used in tests like:
                 # CRITICAL DEBUG: Why wasn't this found?
                 if i <= 5:  # Only log first 5 to avoid spam
                     logger.warning(f"   ⚠️  Locator NOT FOUND: '{locator_name}'")
+                    logger.warning(f"       Step {i}: {description[:60]}")
                     # Check if there's a similar key
                     similar_keys = [k for k in captured_locators.keys() if locator_name.replace('_locator', '') in k or k.replace('_locator', '') in locator_name]
                     if similar_keys:
                         logger.warning(f"       Possible matches in captured dict: {similar_keys[:3]}")
                     else:
-                        logger.warning(f"       No similar keys found. First 5 captured keys: {list(captured_locators.keys())[:5]}")
+                        logger.warning(f"       No similar keys found.")
+                        if captured_locators:
+                            logger.warning(f"       First 5 captured keys: {list(captured_locators.keys())[:5]}")
+                        else:
+                            logger.warning(f"       captured_locators dict is EMPTY!")
+
             lines.append("")
 
         if not enriched_locators:
@@ -6583,6 +9298,753 @@ This matches the pattern used in tests like:
             return f"# TODO: Implement API call - {step.description}"
 
 
+# ============================================================================
+# ANALYTICS & METRICS TRACKING SYSTEM
+# ============================================================================
+
+class TestPilotAnalytics:
+    """Comprehensive analytics and metrics tracking for TestPilot"""
+
+    @staticmethod
+    def get_analytics_directory():
+        """Get the analytics directory path"""
+        analytics_dir = os.path.join(ROOT_DIR, 'generated_tests', 'analytics')
+        os.makedirs(analytics_dir, exist_ok=True)
+        return analytics_dir
+
+    @staticmethod
+    def track_event(event_type: str, event_data: dict):
+        """Track an event with timestamp and metadata"""
+        try:
+            analytics_dir = TestPilotAnalytics.get_analytics_directory()
+            events_file = os.path.join(analytics_dir, 'events.jsonl')
+
+            event = {
+                'timestamp': datetime.now().isoformat(),
+                'event_type': event_type,
+                'user': os.environ.get('USER', 'unknown'),
+                'data': event_data
+            }
+
+            # Append to JSONL file (each line is a JSON object)
+            with open(events_file, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(event) + '\n')
+
+            logger.debug(f"📊 Tracked event: {event_type}")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to track event: {e}")
+            return False
+
+    @staticmethod
+    def track_script_generation(source: str, steps_count: int, duration_seconds: float,
+                               success: bool, ai_used: bool = False, tokens_used: int = 0):
+        """Track script generation event"""
+        TestPilotAnalytics.track_event('script_generation', {
+            'source': source,  # manual, jira, upload, recording
+            'steps_count': steps_count,
+            'duration_seconds': duration_seconds,
+            'success': success,
+            'ai_used': ai_used,
+            'tokens_used': tokens_used
+        })
+
+    @staticmethod
+    def track_template_action(action: str, template_name: str, category: str = None):
+        """Track template-related actions (save, load, reuse)"""
+        TestPilotAnalytics.track_event('template_action', {
+            'action': action,  # save, load, reuse, delete
+            'template_name': template_name,
+            'category': category
+        })
+
+    @staticmethod
+    def track_ai_interaction(model: str, operation: str, tokens_input: int,
+                            tokens_output: int, duration_seconds: float, success: bool):
+        """Track AI model interactions"""
+        TestPilotAnalytics.track_event('ai_interaction', {
+            'model': model,
+            'operation': operation,
+            'tokens_input': tokens_input,
+            'tokens_output': tokens_output,
+            'total_tokens': tokens_input + tokens_output,
+            'duration_seconds': duration_seconds,
+            'success': success
+        })
+
+    @staticmethod
+    def track_module_usage(module: str, action: str, duration_seconds: float = None):
+        """Track module/feature usage"""
+        TestPilotAnalytics.track_event('module_usage', {
+            'module': module,  # manual_entry, jira_fetch, upload, recording, templates
+            'action': action,
+            'duration_seconds': duration_seconds
+        })
+
+    @staticmethod
+    def load_events(days: int = 30) -> List[Dict]:
+        """Load events from the last N days"""
+        try:
+            analytics_dir = TestPilotAnalytics.get_analytics_directory()
+            events_file = os.path.join(analytics_dir, 'events.jsonl')
+
+            if not os.path.exists(events_file):
+                return []
+
+            cutoff_date = datetime.now() - timedelta(days=days)
+            events = []
+
+            with open(events_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    try:
+                        event = json.loads(line.strip())
+                        event_time = datetime.fromisoformat(event['timestamp'])
+                        if event_time >= cutoff_date:
+                            events.append(event)
+                    except Exception as e:
+                        logger.debug(f"Skipping invalid event line: {e}")
+                        continue
+
+            return events
+        except Exception as e:
+            logger.warning(f"Failed to load events: {e}")
+            return []
+
+    @staticmethod
+    def get_usage_statistics(days: int = 30) -> Dict:
+        """Get comprehensive usage statistics"""
+        events = TestPilotAnalytics.load_events(days)
+
+        stats = {
+            'total_events': len(events),
+            'script_generations': 0,
+            'successful_generations': 0,
+            'failed_generations': 0,
+            'total_steps_generated': 0,
+            'ai_interactions': 0,
+            'total_tokens_used': 0,
+            'template_saves': 0,
+            'template_reuses': 0,
+            'module_usage': {},
+            'source_breakdown': {},
+            'daily_activity': {},
+            'unique_users': set(),
+            'avg_generation_time': 0,
+            'avg_steps_per_script': 0
+        }
+
+        generation_times = []
+        steps_per_script = []
+
+        for event in events:
+            stats['unique_users'].add(event.get('user', 'unknown'))
+            event_date = event['timestamp'][:10]
+            stats['daily_activity'][event_date] = stats['daily_activity'].get(event_date, 0) + 1
+
+            if event['event_type'] == 'script_generation':
+                data = event['data']
+                stats['script_generations'] += 1
+                if data.get('success'):
+                    stats['successful_generations'] += 1
+                else:
+                    stats['failed_generations'] += 1
+
+                stats['total_steps_generated'] += data.get('steps_count', 0)
+                steps_per_script.append(data.get('steps_count', 0))
+                generation_times.append(data.get('duration_seconds', 0))
+
+                source = data.get('source', 'unknown')
+                stats['source_breakdown'][source] = stats['source_breakdown'].get(source, 0) + 1
+
+                if data.get('ai_used'):
+                    stats['total_tokens_used'] += data.get('tokens_used', 0)
+
+            elif event['event_type'] == 'template_action':
+                data = event['data']
+                if data.get('action') == 'save':
+                    stats['template_saves'] += 1
+                elif data.get('action') in ['load', 'reuse']:
+                    stats['template_reuses'] += 1
+
+            elif event['event_type'] == 'ai_interaction':
+                data = event['data']
+                stats['ai_interactions'] += 1
+                stats['total_tokens_used'] += data.get('total_tokens', 0)
+
+            elif event['event_type'] == 'module_usage':
+                data = event['data']
+                module = data.get('module', 'unknown')
+                stats['module_usage'][module] = stats['module_usage'].get(module, 0) + 1
+
+        if generation_times:
+            stats['avg_generation_time'] = sum(generation_times) / len(generation_times)
+        if steps_per_script:
+            stats['avg_steps_per_script'] = sum(steps_per_script) / len(steps_per_script)
+
+        stats['unique_users'] = len(stats['unique_users'])
+
+        return stats
+
+    @staticmethod
+    def get_ai_performance_metrics(days: int = 30) -> Dict:
+        """Get AI performance metrics"""
+        events = TestPilotAnalytics.load_events(days)
+
+        metrics = {
+            'total_ai_calls': 0,
+            'successful_calls': 0,
+            'failed_calls': 0,
+            'total_tokens': 0,
+            'total_input_tokens': 0,
+            'total_output_tokens': 0,
+            'avg_tokens_per_call': 0,
+            'avg_response_time': 0,
+            'operations': {},
+            'models_used': {},
+            'success_rate': 0,
+            'token_cost_estimate': 0
+        }
+
+        response_times = []
+        tokens_per_call = []
+
+        for event in events:
+            if event['event_type'] == 'ai_interaction':
+                data = event['data']
+                metrics['total_ai_calls'] += 1
+
+                if data.get('success'):
+                    metrics['successful_calls'] += 1
+                else:
+                    metrics['failed_calls'] += 1
+
+                input_tokens = data.get('tokens_input', 0)
+                output_tokens = data.get('tokens_output', 0)
+                total = data.get('total_tokens', input_tokens + output_tokens)
+
+                metrics['total_tokens'] += total
+                metrics['total_input_tokens'] += input_tokens
+                metrics['total_output_tokens'] += output_tokens
+                tokens_per_call.append(total)
+
+                duration = data.get('duration_seconds', 0)
+                response_times.append(duration)
+
+                operation = data.get('operation', 'unknown')
+                metrics['operations'][operation] = metrics['operations'].get(operation, 0) + 1
+
+                model = data.get('model', 'unknown')
+                metrics['models_used'][model] = metrics['models_used'].get(model, 0) + 1
+
+        if metrics['total_ai_calls'] > 0:
+            metrics['success_rate'] = (metrics['successful_calls'] / metrics['total_ai_calls']) * 100
+
+        if tokens_per_call:
+            metrics['avg_tokens_per_call'] = sum(tokens_per_call) / len(tokens_per_call)
+
+        if response_times:
+            metrics['avg_response_time'] = sum(response_times) / len(response_times)
+
+        # Cost estimate using GPT-4.1-mini pricing (current model)
+        # Input: $0.80 / 1M tokens = $0.0008 / 1K tokens
+        # Output: $3.20 / 1M tokens = $0.0032 / 1K tokens
+        metrics['token_cost_estimate'] = (
+            (metrics['total_input_tokens'] / 1000) * 0.0008 +
+            (metrics['total_output_tokens'] / 1000) * 0.0032
+        )
+
+        # Calculate cost for GPT-5.1 (premium model) for comparison
+        # Input: $1.25 / 1M tokens = $0.00125 / 1K tokens
+        # Output: $10.00 / 1M tokens = $0.01 / 1K tokens
+        metrics['token_cost_estimate_gpt51'] = (
+            (metrics['total_input_tokens'] / 1000) * 0.00125 +
+            (metrics['total_output_tokens'] / 1000) * 0.01
+        )
+
+        # Calculate cost for GPT-5-mini (balanced option) for comparison
+        # Input: $0.25 / 1M tokens = $0.00025 / 1K tokens
+        # Output: $2.00 / 1M tokens = $0.002 / 1K tokens
+        metrics['token_cost_estimate_gpt5_mini'] = (
+            (metrics['total_input_tokens'] / 1000) * 0.00025 +
+            (metrics['total_output_tokens'] / 1000) * 0.002
+        )
+
+        # Calculate pricing details for all models
+        metrics['pricing_breakdown'] = {
+            'gpt41_mini': {
+                'name': 'GPT-4.1-mini',
+                'description': 'Current model',
+                'input_cost': (metrics['total_input_tokens'] / 1000000) * 0.80,
+                'output_cost': (metrics['total_output_tokens'] / 1000000) * 3.20,
+                'total_cost': metrics['token_cost_estimate'],
+                'input_price_per_1m': 0.80,
+                'output_price_per_1m': 3.20
+            },
+            'gpt5_mini': {
+                'name': 'GPT-5mini',
+                'description': 'Faster, cheaper version for well-defined tasks',
+                'input_cost': (metrics['total_input_tokens'] / 1000000) * 0.25,
+                'output_cost': (metrics['total_output_tokens'] / 1000000) * 2.00,
+                'total_cost': metrics['token_cost_estimate_gpt5_mini'],
+                'input_price_per_1m': 0.25,
+                'output_price_per_1m': 2.00
+            },
+            'gpt51': {
+                'name': 'GPT-5.1',
+                'description': 'Best model for coding and agentic tasks',
+                'input_cost': (metrics['total_input_tokens'] / 1000000) * 1.25,
+                'output_cost': (metrics['total_output_tokens'] / 1000000) * 10.00,
+                'total_cost': metrics['token_cost_estimate_gpt51'],
+                'input_price_per_1m': 1.25,
+                'output_price_per_1m': 10.00
+            }
+        }
+
+        return metrics
+
+    @staticmethod
+    def get_roi_metrics(days: int = 30) -> Dict:
+        """Calculate ROI and value metrics"""
+        events = TestPilotAnalytics.load_events(days)
+        stats = TestPilotAnalytics.get_usage_statistics(days)
+
+        # Assumptions for calculation
+        MANUAL_TEST_TIME_MINS = 30  # Time to write test manually
+        GENERATED_SCRIPT_TIME_MINS = 2  # Time saved per generated script
+        HOURLY_RATE = 50  # Average QA hourly rate
+
+        total_scripts = stats['successful_generations']
+        time_saved_mins = total_scripts * (MANUAL_TEST_TIME_MINS - GENERATED_SCRIPT_TIME_MINS)
+        time_saved_hours = time_saved_mins / 60
+        cost_savings = time_saved_hours * HOURLY_RATE
+
+        roi_metrics = {
+            'scripts_generated': total_scripts,
+            'time_saved_minutes': time_saved_mins,
+            'time_saved_hours': round(time_saved_hours, 2),
+            'estimated_cost_savings': round(cost_savings, 2),
+            'avg_time_per_script': round(stats.get('avg_generation_time', 0), 2),
+            'productivity_multiplier': round(MANUAL_TEST_TIME_MINS / max(GENERATED_SCRIPT_TIME_MINS, 1), 2),
+            'templates_created': stats['template_saves'],
+            'templates_reused': stats['template_reuses'],
+            'template_reuse_rate': round(
+                (stats['template_reuses'] / max(stats['template_saves'], 1)) * 100, 2
+            ) if stats['template_saves'] > 0 else 0,
+            'unique_users': stats['unique_users'],
+            'adoption_rate': 'High' if stats['unique_users'] > 5 else 'Medium' if stats['unique_users'] > 2 else 'Low'
+        }
+
+        return roi_metrics
+
+    @staticmethod
+    def get_historical_trends(days: int = 30) -> Dict:
+        """Get historical trend data"""
+        events = TestPilotAnalytics.load_events(days)
+
+        trends = {
+            'daily_generations': {},
+            'daily_ai_calls': {},
+            'daily_tokens': {},
+            'daily_users': {},
+            'weekly_summary': {},
+            'module_trends': {}
+        }
+
+        for event in events:
+            event_date = event['timestamp'][:10]
+            event_week = datetime.fromisoformat(event['timestamp']).strftime('%Y-W%W')
+
+            if event['event_type'] == 'script_generation':
+                trends['daily_generations'][event_date] = trends['daily_generations'].get(event_date, 0) + 1
+                trends['weekly_summary'].setdefault(event_week, {}).setdefault('generations', 0)
+                trends['weekly_summary'][event_week]['generations'] += 1
+
+            elif event['event_type'] == 'ai_interaction':
+                data = event['data']
+                trends['daily_ai_calls'][event_date] = trends['daily_ai_calls'].get(event_date, 0) + 1
+                trends['daily_tokens'][event_date] = trends['daily_tokens'].get(event_date, 0) + data.get('total_tokens', 0)
+
+            elif event['event_type'] == 'module_usage':
+                data = event['data']
+                module = data.get('module', 'unknown')
+                trends['module_trends'].setdefault(module, {}).setdefault(event_date, 0)
+                trends['module_trends'][module][event_date] += 1
+
+            user = event.get('user', 'unknown')
+            trends['daily_users'].setdefault(event_date, set()).add(user)
+
+        # Convert sets to counts
+        for date in trends['daily_users']:
+            trends['daily_users'][date] = len(trends['daily_users'][date])
+
+        return trends
+
+    @staticmethod
+    def get_error_statistics(days: int = 30) -> Dict:
+        """Get error and failure statistics"""
+        events = TestPilotAnalytics.load_events(days)
+
+        error_stats = {
+            'total_errors': 0,
+            'generation_failures': 0,
+            'ai_failures': 0,
+            'error_types': {},
+            'error_rate': 0,
+            'most_common_errors': [],
+            'errors_by_module': {},
+            'daily_errors': {}
+        }
+
+        total_operations = 0
+
+        for event in events:
+            event_date = event['timestamp'][:10]
+
+            if event['event_type'] == 'script_generation':
+                total_operations += 1
+                data = event['data']
+                if not data.get('success'):
+                    error_stats['total_errors'] += 1
+                    error_stats['generation_failures'] += 1
+                    error_stats['daily_errors'][event_date] = error_stats['daily_errors'].get(event_date, 0) + 1
+
+                    source = data.get('source', 'unknown')
+                    error_stats['errors_by_module'][source] = error_stats['errors_by_module'].get(source, 0) + 1
+
+            elif event['event_type'] == 'ai_interaction':
+                total_operations += 1
+                data = event['data']
+                if not data.get('success'):
+                    error_stats['total_errors'] += 1
+                    error_stats['ai_failures'] += 1
+                    error_stats['daily_errors'][event_date] = error_stats['daily_errors'].get(event_date, 0) + 1
+
+                    operation = data.get('operation', 'unknown')
+                    error_stats['errors_by_module'][operation] = error_stats['errors_by_module'].get(operation, 0) + 1
+
+        if total_operations > 0:
+            error_stats['error_rate'] = (error_stats['total_errors'] / total_operations) * 100
+
+        # Get most common errors
+        error_stats['most_common_errors'] = sorted(
+            error_stats['errors_by_module'].items(),
+            key=lambda x: x[1],
+            reverse=True
+        )[:5]
+
+        return error_stats
+
+    @staticmethod
+    def get_quality_metrics(days: int = 30) -> Dict:
+        """Get script quality and consistency metrics"""
+        events = TestPilotAnalytics.load_events(days)
+
+        quality_metrics = {
+            'total_scripts': 0,
+            'steps_distribution': {
+                '1-5': 0,
+                '6-10': 0,
+                '11-20': 0,
+                '21+': 0
+            },
+            'avg_steps': 0,
+            'median_steps': 0,
+            'script_sizes': [],
+            'generation_times': [],
+            'quality_score': 0,
+            'consistency_score': 0
+        }
+
+        steps_list = []
+
+        for event in events:
+            if event['event_type'] == 'script_generation':
+                data = event['data']
+                if data.get('success'):
+                    quality_metrics['total_scripts'] += 1
+                    steps = data.get('steps_count', 0)
+                    steps_list.append(steps)
+
+                    # Categorize by step count
+                    if steps <= 5:
+                        quality_metrics['steps_distribution']['1-5'] += 1
+                    elif steps <= 10:
+                        quality_metrics['steps_distribution']['6-10'] += 1
+                    elif steps <= 20:
+                        quality_metrics['steps_distribution']['11-20'] += 1
+                    else:
+                        quality_metrics['steps_distribution']['21+'] += 1
+
+                    quality_metrics['generation_times'].append(data.get('duration_seconds', 0))
+
+        if steps_list:
+            quality_metrics['avg_steps'] = round(sum(steps_list) / len(steps_list), 1)
+            steps_list_sorted = sorted(steps_list)
+            mid = len(steps_list_sorted) // 2
+            quality_metrics['median_steps'] = steps_list_sorted[mid] if len(steps_list_sorted) % 2 == 1 else \
+                                              (steps_list_sorted[mid-1] + steps_list_sorted[mid]) / 2
+
+            # Calculate quality score (0-100) based on:
+            # - Success rate (already tracked elsewhere)
+            # - Consistency (lower std dev = higher score)
+            import statistics
+            if len(steps_list) > 1:
+                std_dev = statistics.stdev(steps_list)
+                # Lower std dev = more consistent = higher quality
+                quality_metrics['consistency_score'] = max(0, 100 - (std_dev * 5))
+            else:
+                quality_metrics['consistency_score'] = 100
+
+        return quality_metrics
+
+    @staticmethod
+    def get_executive_summary(days: int = 30) -> Dict:
+        """
+        Get comprehensive executive summary with all key business metrics
+        Designed for business executive review with accurate calculations
+        """
+        # Gather all metrics
+        stats = TestPilotAnalytics.get_usage_statistics(days)
+        ai_metrics = TestPilotAnalytics.get_ai_performance_metrics(days)
+        roi_metrics = TestPilotAnalytics.get_roi_metrics(days)
+        quality_metrics = TestPilotAnalytics.get_quality_metrics(days)
+        error_stats = TestPilotAnalytics.get_error_statistics(days)
+
+        # Calculate key business metrics
+        total_scripts = stats['successful_generations']
+
+        # Cost metrics (validated)
+        ai_cost = ai_metrics.get('token_cost_estimate', 0.0)
+        labor_savings = roi_metrics.get('estimated_cost_savings', 0.0)
+        net_roi = labor_savings - ai_cost
+
+        # ROI percentage (avoid division by zero)
+        roi_percentage = 0.0
+        if ai_cost > 0:
+            roi_percentage = (net_roi / ai_cost) * 100
+
+        # Efficiency metrics
+        time_saved_hours = roi_metrics.get('time_saved_hours', 0.0)
+        productivity_gain = roi_metrics.get('productivity_multiplier', 0.0)
+
+        # Quality metrics
+        success_rate = 0.0
+        if stats['script_generations'] > 0:
+            success_rate = (stats['successful_generations'] / stats['script_generations']) * 100
+
+        reliability_score = error_stats.get('reliability_score', 100.0)
+        consistency_score = quality_metrics.get('consistency_score', 0.0)
+
+        # Overall quality score (weighted average)
+        overall_quality_score = (
+            success_rate * 0.4 +  # 40% weight on success rate
+            reliability_score * 0.4 +  # 40% weight on reliability
+            consistency_score * 0.2  # 20% weight on consistency
+        )
+
+        # Adoption metrics
+        active_users = stats['unique_users']
+        adoption_status = roi_metrics.get('adoption_rate', 'None')
+
+        # Cost efficiency (cost per successful script)
+        cost_per_script = 0.0
+        if total_scripts > 0:
+            cost_per_script = ai_cost / total_scripts
+
+        # Value per script (savings per script)
+        value_per_script = 0.0
+        if total_scripts > 0:
+            value_per_script = labor_savings / total_scripts
+
+        executive_summary = {
+            'reporting_period_days': days,
+            'generated_at': datetime.now().isoformat(),
+
+            # Top-line metrics
+            'total_scripts_generated': total_scripts,
+            'total_test_steps': stats['total_steps_generated'],
+            'success_rate': round(success_rate, 1),
+
+            # Financial metrics
+            'total_labor_savings_usd': round(labor_savings, 2),
+            'total_ai_cost_usd': round(ai_cost, 2),
+            'net_roi_usd': round(net_roi, 2),
+            'roi_percentage': round(roi_percentage, 1),
+            'cost_per_script_usd': round(cost_per_script, 4),
+            'value_per_script_usd': round(value_per_script, 2),
+
+            # Efficiency metrics
+            'time_saved_hours': round(time_saved_hours, 1),
+            'productivity_multiplier': round(productivity_gain, 1),
+            'avg_generation_time_seconds': round(stats.get('avg_generation_time', 0), 2),
+
+            # Quality metrics
+            'overall_quality_score': round(overall_quality_score, 1),
+            'reliability_score': round(reliability_score, 1),
+            'consistency_score': round(consistency_score, 1),
+            'error_rate': round(error_stats.get('error_rate', 0), 2),
+
+            # Adoption metrics
+            'active_users': active_users,
+            'adoption_status': adoption_status,
+            'template_reuse_rate': round(roi_metrics.get('template_reuse_rate', 0), 1),
+
+            # AI performance
+            'total_ai_calls': ai_metrics.get('total_ai_calls', 0),
+            'ai_success_rate': round(ai_metrics.get('success_rate', 0), 1),
+            'total_tokens_used': ai_metrics.get('total_tokens', 0),
+            'avg_response_time_seconds': round(ai_metrics.get('avg_response_time', 0), 2),
+
+            # Assumptions (for transparency)
+            'assumptions': roi_metrics.get('assumptions', {}),
+
+            # Status indicators
+            'health_status': 'Excellent' if overall_quality_score >= 90 else 'Good' if overall_quality_score >= 75 else 'Fair' if overall_quality_score >= 60 else 'Needs Attention',
+            'roi_status': 'Positive' if net_roi > 0 else 'Break-even' if net_roi == 0 else 'Negative'
+        }
+
+        return executive_summary
+
+    @staticmethod
+    def get_comparison_metrics(days: int = 30, compare_days: int = 30) -> Dict:
+        """Get metrics comparing current period to previous period"""
+        current_stats = TestPilotAnalytics.get_usage_statistics(days)
+
+        # Get previous period stats
+        events_file = os.path.join(TestPilotAnalytics.get_analytics_directory(), 'events.jsonl')
+        if not os.path.exists(events_file):
+            return {'comparison_available': False}
+
+        cutoff_date = datetime.now() - timedelta(days=days)
+        previous_cutoff = cutoff_date - timedelta(days=compare_days)
+
+        previous_events = []
+        with open(events_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                try:
+                    event = json.loads(line.strip())
+                    event_time = datetime.fromisoformat(event['timestamp'])
+                    if previous_cutoff <= event_time < cutoff_date:
+                        previous_events.append(event)
+                except:
+                    continue
+
+        # Calculate previous period stats
+        prev_stats = {
+            'script_generations': 0,
+            'successful_generations': 0,
+            'ai_interactions': 0,
+            'total_tokens_used': 0
+        }
+
+        for event in previous_events:
+            if event['event_type'] == 'script_generation':
+                prev_stats['script_generations'] += 1
+                if event['data'].get('success'):
+                    prev_stats['successful_generations'] += 1
+            elif event['event_type'] == 'ai_interaction':
+                prev_stats['ai_interactions'] += 1
+                prev_stats['total_tokens_used'] += event['data'].get('total_tokens', 0)
+
+        # Calculate changes
+        comparison = {
+            'comparison_available': True,
+            'scripts_change': current_stats['script_generations'] - prev_stats['script_generations'],
+            'scripts_change_pct': ((current_stats['script_generations'] - prev_stats['script_generations']) /
+                                   max(prev_stats['script_generations'], 1)) * 100,
+            'success_change': current_stats['successful_generations'] - prev_stats['successful_generations'],
+            'ai_calls_change': current_stats['ai_interactions'] - prev_stats['ai_interactions'],
+            'tokens_change': current_stats['total_tokens_used'] - prev_stats['total_tokens_used'],
+            'previous_period_days': compare_days
+        }
+
+        return comparison
+
+
+# ============================================================================
+# AI INTERACTION TRACKING HELPERS
+# ============================================================================
+
+def track_ai_call(azure_client, operation: str, func_name: str, *args, **kwargs):
+    """
+    Wrapper function to track AI API calls with token usage
+
+    Args:
+        azure_client: Azure OpenAI client instance
+        operation: Operation type (analyze_steps, enhance_bug, generate_script, etc.)
+        func_name: Function name to call (chat_completion_create or completion_create)
+        *args, **kwargs: Arguments to pass to the function
+
+    Returns:
+        Response from AI API call
+    """
+    start_time = time.time()
+    success = False
+    tokens_input = 0
+    tokens_output = 0
+    model = kwargs.get('model') or azure_client.deployment_name or 'unknown'
+
+    try:
+        # Call the actual AI function
+        if func_name == 'chat_completion_create':
+            response = azure_client.chat_completion_create(*args, **kwargs)
+        elif func_name == 'completion_create':
+            response = azure_client.completion_create(*args, **kwargs)
+        else:
+            raise ValueError(f"Unknown function: {func_name}")
+
+        # Extract token usage from response
+        if response and 'usage' in response and response['usage']:
+            tokens_input = response['usage'].get('prompt_tokens', 0)
+            tokens_output = response['usage'].get('completion_tokens', 0)
+
+        success = True
+        return response
+
+    except Exception as e:
+        logger.error(f"AI call failed: {e}")
+        raise
+
+    finally:
+        # Track the interaction
+        duration = time.time() - start_time
+
+        try:
+            TestPilotAnalytics.track_ai_interaction(
+                model=model,
+                operation=operation,
+                tokens_input=tokens_input,
+                tokens_output=tokens_output,
+                duration_seconds=duration,
+                success=success
+            )
+        except Exception as track_error:
+            logger.warning(f"Failed to track AI interaction: {track_error}")
+
+
+def safe_ai_call(azure_client, operation: str, func_name: str, *args, **kwargs):
+    """
+    Safe wrapper for AI calls that handles errors and tracking
+
+    Args:
+        azure_client: Azure OpenAI client instance
+        operation: Operation type
+        func_name: Function to call
+        *args, **kwargs: Function arguments
+
+    Returns:
+        Response or None on error
+    """
+    if not azure_client or not azure_client.is_configured():
+        logger.warning(f"Azure client not configured for {operation}")
+        return None
+
+    try:
+        return track_ai_call(azure_client, operation, func_name, *args, **kwargs)
+    except Exception as e:
+        logger.error(f"AI call error in {operation}: {e}")
+        return None
+
 
 def show_ui():
     """Main UI for TestPilot module"""
@@ -6640,51 +10102,330 @@ def show_ui():
     """, unsafe_allow_html=True)
 
     # Helper functions for template management
-    def save_template(template_name: str, test_data: dict):
-        """Save current test as a template"""
+    def get_templates_directory():
+        """Get the templates directory path"""
+        templates_dir = os.path.join(ROOT_DIR, 'generated_tests', 'templates')
+        os.makedirs(templates_dir, exist_ok=True)
+        return templates_dir
+
+    def save_template(template_name: str, test_data: dict, category: str = "General", author: str = "Unknown"):
+        """Save current test as a template with enhanced metadata"""
         template = {
             'name': template_name,
             'title': test_data.get('title', ''),
             'description': test_data.get('description', ''),
             'priority': test_data.get('priority', 'Medium'),
             'tags': test_data.get('tags', ''),
+            'category': category,
+            'author': author,
             'steps': test_data.get('steps', []),
             'created_at': datetime.now().isoformat(),
-            'last_used': datetime.now().isoformat()
+            'last_used': datetime.now().isoformat(),
+            'version': '1.0',
+            'usage_count': 0,
+            'metadata': {
+                'step_count': len(test_data.get('steps', [])),
+                'has_navigation': any('navigate' in step.get('description', '').lower() for step in test_data.get('steps', [])),
+                'has_verification': any('verify' in step.get('description', '').lower() or 'assert' in step.get('description', '').lower() for step in test_data.get('steps', []))
+            }
         }
+
+        # Check if template already exists and increment version
+        if template_name in st.session_state.test_pilot_saved_templates:
+            existing = st.session_state.test_pilot_saved_templates[template_name]
+            try:
+                major, minor = existing.get('version', '1.0').split('.')
+                template['version'] = f"{major}.{int(minor) + 1}"
+                template['created_at'] = existing.get('created_at', template['created_at'])
+                template['usage_count'] = existing.get('usage_count', 0)
+            except:
+                template['version'] = '1.1'
+
         st.session_state.test_pilot_saved_templates[template_name] = template
 
-        # Also save to disk for persistence
+        # Save to disk for persistence
         try:
-            templates_dir = os.path.join(ROOT_DIR, 'generated_tests', 'templates')
-            os.makedirs(templates_dir, exist_ok=True)
+            templates_dir = get_templates_directory()
             template_file = os.path.join(templates_dir, f"{template_name.replace(' ', '_')}.json")
-            with open(template_file, 'w') as f:
-                json.dump(template, f, indent=2)
+            with open(template_file, 'w', encoding='utf-8') as f:
+                json.dump(template, f, indent=2, ensure_ascii=False)
+            logger.info(f"✅ Template '{template_name}' saved successfully to {template_file}")
+            return True, f"Template saved successfully (v{template['version']})"
         except Exception as e:
-            logger.warning(f"Could not save template to disk: {e}")
+            logger.error(f"Could not save template to disk: {e}")
+            return False, f"Failed to save template: {str(e)}"
 
     def load_template(template_name: str) -> dict:
-        """Load a saved template"""
+        """Load a saved template and update usage statistics"""
         if template_name in st.session_state.test_pilot_saved_templates:
             template = st.session_state.test_pilot_saved_templates[template_name]
             template['last_used'] = datetime.now().isoformat()
+            template['usage_count'] = template.get('usage_count', 0) + 1
+
+            # Update the file with new usage stats
+            try:
+                templates_dir = get_templates_directory()
+                template_file = os.path.join(templates_dir, f"{template_name.replace(' ', '_')}.json")
+                with open(template_file, 'w', encoding='utf-8') as f:
+                    json.dump(template, f, indent=2, ensure_ascii=False)
+            except Exception as e:
+                logger.warning(f"Could not update template usage stats: {e}")
+
             return template
         return None
+
+    def sync_templates_with_analytics():
+        """
+        Sync existing templates with analytics system.
+        Ensures all saved templates are tracked in analytics.
+        Useful for retroactive tracking or if analytics data is lost.
+        """
+        if not st.session_state.test_pilot_saved_templates:
+            return 0
+
+        synced_count = 0
+
+        # Load existing analytics events
+        existing_events = TestPilotAnalytics.load_events(days=365)
+        tracked_templates = set()
+
+        # Find templates already tracked
+        for event in existing_events:
+            if (event.get('event_type') == 'template_action' and
+                event.get('data', {}).get('action') == 'save'):
+                tracked_templates.add(event.get('data', {}).get('template_name'))
+
+        # Track templates not yet in analytics
+        for template_name, template in st.session_state.test_pilot_saved_templates.items():
+            if template_name not in tracked_templates:
+                TestPilotAnalytics.track_template_action(
+                    'save',
+                    template_name,
+                    template.get('category', 'General')
+                )
+                synced_count += 1
+                logger.info(f"📊 Synced template to analytics: {template_name}")
+
+        if synced_count > 0:
+            logger.info(f"✅ Synced {synced_count} template(s) with analytics")
+
+        return synced_count
 
     def load_templates_from_disk():
         """Load saved templates from disk on startup"""
         try:
-            templates_dir = os.path.join(ROOT_DIR, 'generated_tests', 'templates')
-            if os.path.exists(templates_dir):
-                for filename in os.listdir(templates_dir):
-                    if filename.endswith('.json'):
-                        template_file = os.path.join(templates_dir, filename)
-                        with open(template_file, 'r') as f:
-                            template = json.load(f)
+            templates_dir = get_templates_directory()
+            logger.info(f"🔍 Looking for templates in: {templates_dir}")
+
+            # Check if directory exists and is readable
+            if not os.path.exists(templates_dir):
+                logger.warning(f"Templates directory does not exist: {templates_dir}")
+                return
+
+            if not os.access(templates_dir, os.R_OK):
+                logger.error(f"Templates directory is not readable: {templates_dir}")
+                return
+
+            loaded_count = 0
+            files_found = 0
+
+            # List all files in the directory
+            all_files = os.listdir(templates_dir)
+            json_files = [f for f in all_files if f.endswith('.json')]
+
+            logger.info(f"📁 Found {len(json_files)} JSON file(s) in templates directory")
+
+            for filename in json_files:
+                files_found += 1
+                template_file = os.path.join(templates_dir, filename)
+                logger.info(f"📄 Processing template file: {filename}")
+
+                try:
+                    with open(template_file, 'r', encoding='utf-8') as f:
+                        template = json.load(f)
+
+                        # Validate template structure
+                        if 'name' in template and 'steps' in template:
+                            # Ensure backward compatibility with old templates
+                            if 'version' not in template:
+                                template['version'] = '1.0'
+                            if 'category' not in template:
+                                template['category'] = 'General'
+                            if 'author' not in template:
+                                template['author'] = 'Unknown'
+                            if 'usage_count' not in template:
+                                template['usage_count'] = 0
+                            if 'metadata' not in template:
+                                template['metadata'] = {
+                                    'step_count': len(template.get('steps', [])),
+                                    'has_navigation': False,
+                                    'has_verification': False
+                                }
+
                             st.session_state.test_pilot_saved_templates[template['name']] = template
+                            loaded_count += 1
+                            logger.info(f"✅ Loaded template: {template['name']}")
+
+                            # Track existing template in analytics (if not already tracked)
+                            # This ensures templates created before analytics are counted
+                            if template.get('created_at'):
+                                # Check if this template save was already tracked
+                                try:
+                                    existing_events = TestPilotAnalytics.load_events(days=365)
+                                    template_already_tracked = any(
+                                        e.get('event_type') == 'template_action' and
+                                        e.get('data', {}).get('action') == 'save' and
+                                        e.get('data', {}).get('template_name') == template['name']
+                                        for e in existing_events
+                                    )
+
+                                    if not template_already_tracked:
+                                        # Track retroactively using template's creation date
+                                        logger.info(f"📊 Tracking existing template in analytics: {template['name']}")
+                                        TestPilotAnalytics.track_template_action(
+                                            'save',
+                                            template['name'],
+                                            template.get('category', 'General')
+                                        )
+                                except Exception as analytics_error:
+                                    logger.warning(f"Could not track template in analytics: {analytics_error}")
+                        else:
+                            logger.warning(f"❌ Invalid template structure in {filename} - missing 'name' or 'steps'")
+                            logger.debug(f"Template keys found: {list(template.keys())}")
+
+                except json.JSONDecodeError as e:
+                    logger.error(f"❌ Failed to parse JSON in template {filename}: {e}")
+                except Exception as e:
+                    logger.error(f"❌ Error loading template {filename}: {e}")
+                    import traceback
+                    logger.debug(traceback.format_exc())
+
+            if loaded_count > 0:
+                logger.info(f"✅ Successfully loaded {loaded_count} template(s) from disk")
+                # Show success notification in UI
+                st.toast(f"✅ Auto-loaded {loaded_count} template(s) from disk", icon="📚")
+            elif files_found > 0:
+                logger.warning(f"⚠️ Found {files_found} template file(s) but loaded 0 - check file structure")
+                st.warning(f"⚠️ Found {files_found} template file(s) but could not load them. Check logs for details.")
+            else:
+                logger.info("ℹ️ No template files found in directory")
+
         except Exception as e:
-            logger.warning(f"Could not load templates from disk: {e}")
+            logger.error(f"❌ Could not load templates from disk: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+            st.warning(f"⚠️ Could not auto-load templates: {str(e)}")
+
+    def export_template_to_json(template_name: str) -> str:
+        """Export a single template to JSON string"""
+        if template_name in st.session_state.test_pilot_saved_templates:
+            template = st.session_state.test_pilot_saved_templates[template_name]
+            return json.dumps(template, indent=2, ensure_ascii=False)
+        return None
+
+    def export_all_templates_to_json() -> str:
+        """Export all templates to a single JSON file"""
+        export_data = {
+            'exported_at': datetime.now().isoformat(),
+            'template_count': len(st.session_state.test_pilot_saved_templates),
+            'templates': list(st.session_state.test_pilot_saved_templates.values())
+        }
+        return json.dumps(export_data, indent=2, ensure_ascii=False)
+
+    def import_template_from_json(json_data: str) -> tuple:
+        """Import template(s) from JSON data"""
+        try:
+            data = json.loads(json_data)
+            imported_count = 0
+
+            # Check if it's a single template or bulk export
+            if 'templates' in data:
+                # Bulk import
+                for template in data['templates']:
+                    if 'name' in template and 'steps' in template:
+                        # Check for name conflicts
+                        original_name = template['name']
+                        name = original_name
+                        counter = 1
+                        while name in st.session_state.test_pilot_saved_templates:
+                            name = f"{original_name} ({counter})"
+                            counter += 1
+
+                        template['name'] = name
+                        st.session_state.test_pilot_saved_templates[name] = template
+
+                        # Save to disk
+                        try:
+                            templates_dir = get_templates_directory()
+                            template_file = os.path.join(templates_dir, f"{name.replace(' ', '_')}.json")
+                            with open(template_file, 'w', encoding='utf-8') as f:
+                                json.dump(template, f, indent=2, ensure_ascii=False)
+                        except Exception as e:
+                            logger.warning(f"Could not save imported template to disk: {e}")
+
+                        imported_count += 1
+            elif 'name' in data and 'steps' in data:
+                # Single template import
+                original_name = data['name']
+                name = original_name
+                counter = 1
+                while name in st.session_state.test_pilot_saved_templates:
+                    name = f"{original_name} ({counter})"
+                    counter += 1
+
+                data['name'] = name
+                st.session_state.test_pilot_saved_templates[name] = data
+
+                # Save to disk
+                try:
+                    templates_dir = get_templates_directory()
+                    template_file = os.path.join(templates_dir, f"{name.replace(' ', '_')}.json")
+                    with open(template_file, 'w', encoding='utf-8') as f:
+                        json.dump(data, f, indent=2, ensure_ascii=False)
+                except Exception as e:
+                    logger.warning(f"Could not save imported template to disk: {e}")
+
+                imported_count = 1
+            else:
+                return False, "Invalid template format"
+
+            return True, f"Successfully imported {imported_count} template(s)"
+        except json.JSONDecodeError:
+            return False, "Invalid JSON format"
+        except Exception as e:
+            return False, f"Import failed: {str(e)}"
+
+    def delete_template(template_name: str) -> tuple:
+        """Delete a template from memory and disk"""
+        try:
+            # Delete from session state
+            if template_name in st.session_state.test_pilot_saved_templates:
+                del st.session_state.test_pilot_saved_templates[template_name]
+
+            # Delete from disk
+            templates_dir = get_templates_directory()
+            template_file = os.path.join(templates_dir, f"{template_name.replace(' ', '_')}.json")
+            if os.path.exists(template_file):
+                os.remove(template_file)
+
+            return True, f"Template '{template_name}' deleted successfully"
+        except Exception as e:
+            return False, f"Failed to delete template: {str(e)}"
+
+    def get_template_categories() -> list:
+        """Get list of unique template categories"""
+        categories = set()
+        for template in st.session_state.test_pilot_saved_templates.values():
+            categories.add(template.get('category', 'General'))
+        return sorted(list(categories))
+
+    def get_templates_by_category(category: str) -> list:
+        """Get templates filtered by category"""
+        templates = []
+        for name, template in st.session_state.test_pilot_saved_templates.items():
+            if template.get('category', 'General') == category:
+                templates.append(name)
+        return templates
 
     def get_step_suggestions(current_steps: list, azure_client=None) -> list:
         """Get AI-powered suggestions for next steps based on current steps"""
@@ -6714,7 +10455,10 @@ Return only the step descriptions, one per line, without numbering."""
                 {"role": "user", "content": prompt}
             ]
 
-            response = azure_client.chat_completion_create(
+            response = track_ai_call(
+                azure_client,
+                operation='suggest_next_steps',
+                func_name='chat_completion_create',
                 messages=messages,
                 temperature=0.7,
                 max_tokens=300
@@ -6771,20 +10515,302 @@ Return only the step descriptions, one per line, without numbering."""
         st.warning("⚠️ Azure OpenAI client not available. AI features will be limited.")
 
     # Main tabs for different input methods
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
+        "📊 Executive Summary",
         "📝 Manual Entry",
         "🎫 Jira/Zephyr",
         "📤 Upload Recording",
         "⏺️ Record & Playback",
-        "📊 Generated Scripts"
+        "📊 Generated Scripts",
+        "📈 Analytics & Metrics",
+        "🎯 Module Usage",
+        "🤖 AI Performance",
+        "📊 Historical Trends",
+        "💰 ROI Dashboard"
     ])
 
     # Initialize Azure client
     azure_client = None
-    if AZURE_AVAILABLE:
+    if AZURE_AVAILABLE and AzureOpenAIClient is not None:
         azure_client = AzureOpenAIClient()
 
     engine = TestPilotEngine(azure_client)
+
+    # Tab 0: Executive Summary
+    with tab0:
+        st.markdown("### 📊 Executive Summary")
+        st.markdown("**Comprehensive business metrics and KPIs for executive review**")
+        st.markdown("---")
+
+        # Time range selector
+        col1, col2, col3 = st.columns([2, 1, 1])
+        with col1:
+            exec_days_filter = st.selectbox(
+                "Reporting Period",
+                options=[7, 14, 30, 60, 90, 180, 365],
+                index=2,  # Default to 30 days
+                format_func=lambda x: f"Last {x} days",
+                key="exec_summary_days"
+            )
+        with col2:
+            if st.button("🔄 Refresh", use_container_width=True, key="exec_refresh"):
+                st.rerun()
+        with col3:
+            # Export button placeholder
+            pass
+
+        with st.spinner("Loading executive metrics..."):
+            exec_summary = TestPilotAnalytics.get_executive_summary(days=exec_days_filter)
+
+        # Health Status Banner
+        health_status = exec_summary['health_status']
+        roi_status = exec_summary['roi_status']
+
+        if health_status == 'Excellent' and roi_status == 'Positive':
+            st.success(f"✅ **System Health: {health_status}** | **ROI: {roi_status}** ({exec_summary['roi_percentage']:.1f}%)")
+        elif health_status in ['Good', 'Fair'] or roi_status == 'Break-even':
+            st.info(f"ℹ️ **System Health: {health_status}** | **ROI: {roi_status}** ({exec_summary['roi_percentage']:.1f}%)")
+        else:
+            st.warning(f"⚠️ **System Health: {health_status}** | **ROI: {roi_status}** - Needs attention")
+
+        st.markdown("---")
+
+        # Key Business Metrics - Top Row
+        st.markdown("#### 💎 Key Performance Indicators")
+
+        col1, col2, col3, col4, col5 = st.columns(5)
+
+        with col1:
+            st.metric(
+                "Test Scripts Generated",
+                f"{exec_summary['total_scripts_generated']:,}",
+                help="Total successful test scripts generated"
+            )
+
+        with col2:
+            st.metric(
+                "Success Rate",
+                f"{exec_summary['success_rate']:.1f}%",
+                help="Percentage of successful generations"
+            )
+
+        with col3:
+            st.metric(
+                "Quality Score",
+                f"{exec_summary['overall_quality_score']:.1f}/100",
+                help="Overall quality score (success rate + reliability + consistency)"
+            )
+
+        with col4:
+            st.metric(
+                "Net ROI",
+                f"${exec_summary['net_roi_usd']:,.2f}",
+                delta=f"{exec_summary['roi_percentage']:.1f}% ROI",
+                help="Total labor savings minus AI costs"
+            )
+
+        with col5:
+            st.metric(
+                "Active Users",
+                exec_summary['active_users'],
+                delta=exec_summary['adoption_status'],
+                help="Unique users in the reporting period"
+            )
+
+        st.markdown("---")
+
+        # Financial Metrics
+        st.markdown("#### 💰 Financial Analysis")
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            st.metric(
+                "Labor Savings",
+                f"${exec_summary['total_labor_savings_usd']:,.2f}",
+                help="Estimated labor cost savings from automation"
+            )
+
+        with col2:
+            st.metric(
+                "AI Costs",
+                f"${exec_summary['total_ai_cost_usd']:.2f}",
+                help="Total AI API costs"
+            )
+
+        with col3:
+            st.metric(
+                "Cost per Script",
+                f"${exec_summary['cost_per_script_usd']:.4f}",
+                help="Average AI cost per generated script"
+            )
+
+        with col4:
+            st.metric(
+                "Value per Script",
+                f"${exec_summary['value_per_script_usd']:.2f}",
+                help="Average labor savings per script"
+            )
+
+        st.markdown("---")
+
+        # Efficiency Metrics
+        st.markdown("#### ⚡ Efficiency & Performance")
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            st.metric(
+                "Time Saved",
+                f"{exec_summary['time_saved_hours']:.1f} hrs",
+                help="Total time saved vs. manual test creation"
+            )
+
+        with col2:
+            st.metric(
+                "Productivity Gain",
+                f"{exec_summary['productivity_multiplier']:.1f}x",
+                help="Productivity multiplier vs. manual approach"
+            )
+
+        with col3:
+            st.metric(
+                "Avg Generation Time",
+                f"{exec_summary['avg_generation_time_seconds']:.2f}s",
+                help="Average time to generate a script"
+            )
+
+        with col4:
+            st.metric(
+                "Total Test Steps",
+                f"{exec_summary['total_test_steps']:,}",
+                help="Total test steps generated across all scripts"
+            )
+
+        st.markdown("---")
+
+        # Quality & Reliability Metrics
+        st.markdown("#### ✨ Quality & Reliability")
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            reliability_color = "🟢" if exec_summary['reliability_score'] >= 90 else "🟡" if exec_summary['reliability_score'] >= 75 else "🔴"
+            st.metric(
+                "Reliability Score",
+                f"{reliability_color} {exec_summary['reliability_score']:.1f}%",
+                help="System reliability (100% - error rate)"
+            )
+
+        with col2:
+            consistency_color = "🟢" if exec_summary['consistency_score'] >= 80 else "🟡" if exec_summary['consistency_score'] >= 60 else "🔴"
+            st.metric(
+                "Consistency Score",
+                f"{consistency_color} {exec_summary['consistency_score']:.1f}",
+                help="Script consistency score"
+            )
+
+        with col3:
+            st.metric(
+                "Error Rate",
+                f"{exec_summary['error_rate']:.2f}%",
+                delta=f"Reliability: {exec_summary['reliability_score']:.1f}%",
+                delta_color="normal",
+                help="Percentage of operations that failed"
+            )
+
+        with col4:
+            st.metric(
+                "Template Reuse Rate",
+                f"{exec_summary['template_reuse_rate']:.1f}%",
+                help="Efficiency of template reuse"
+            )
+
+        st.markdown("---")
+
+        # AI Performance Metrics
+        st.markdown("#### 🤖 AI Performance")
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            st.metric(
+                "Total AI Calls",
+                f"{exec_summary['total_ai_calls']:,}",
+                help="Total AI API interactions"
+            )
+
+        with col2:
+            st.metric(
+                "AI Success Rate",
+                f"{exec_summary['ai_success_rate']:.1f}%",
+                help="Percentage of successful AI calls"
+            )
+
+        with col3:
+            st.metric(
+                "Tokens Used",
+                f"{exec_summary['total_tokens_used']:,}",
+                help="Total tokens consumed"
+            )
+
+        with col4:
+            st.metric(
+                "Avg Response Time",
+                f"{exec_summary['avg_response_time_seconds']:.2f}s",
+                help="Average AI response time"
+            )
+
+        st.markdown("---")
+
+        # Assumptions & Methodology
+        with st.expander("📋 Methodology & Assumptions", expanded=False):
+            st.markdown("#### Calculation Assumptions")
+
+            assumptions = exec_summary.get('assumptions', {})
+
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                st.markdown("**Time Assumptions**")
+                st.write(f"• Manual test time: {assumptions.get('manual_time_mins', 30)} mins")
+                st.write(f"• Automated time: {assumptions.get('auto_time_mins', 2):.2f} mins")
+
+            with col2:
+                st.markdown("**Cost Assumptions**")
+                st.write(f"• QA hourly rate: ${assumptions.get('hourly_rate_usd', 50)}/hr")
+                st.write(f"• AI pricing: GPT-4.1-mini")
+
+            with col3:
+                st.markdown("**Quality Metrics**")
+                st.write("• Success Rate: 40% weight")
+                st.write("• Reliability: 40% weight")
+                st.write("• Consistency: 20% weight")
+
+            st.markdown("---")
+            st.markdown("#### Report Details")
+            st.write(f"• **Reporting Period:** {exec_summary['reporting_period_days']} days")
+            st.write(f"• **Generated At:** {exec_summary['generated_at']}")
+            st.write(f"• **Health Status:** {exec_summary['health_status']}")
+            st.write(f"• **ROI Status:** {exec_summary['roi_status']}")
+
+        # Export Options
+        st.markdown("---")
+        col1, col2 = st.columns(2)
+
+        with col1:
+            # Create JSON export (json already imported at module level)
+            summary_json = json.dumps(exec_summary, indent=2, default=str)
+            st.download_button(
+                label="📥 Download Executive Summary (JSON)",
+                data=summary_json,
+                file_name=f"executive_summary_{datetime.now().strftime('%Y%m%d')}.json",
+                mime="application/json",
+                use_container_width=True
+            )
+
+        with col2:
+            st.info("💡 For detailed breakdowns, explore the other tabs: Analytics, AI Performance, ROI Dashboard, etc.")
 
     # Tab 1: Manual Entry
     with tab1:
@@ -6793,10 +10819,24 @@ Return only the step descriptions, one per line, without numbering."""
 
         # Template Management Section
         with st.expander("📚 Template Library & Quick Actions", expanded=False):
+            # Add reload button at the top
+            col_reload1, col_reload2 = st.columns([3, 1])
+            with col_reload1:
+                st.caption(f"📚 {len(st.session_state.test_pilot_saved_templates)} template(s) loaded")
+            with col_reload2:
+                if st.button("🔄 Reload", help="Reload templates from disk", use_container_width=True):
+                    # Clear existing templates
+                    st.session_state.test_pilot_saved_templates.clear()
+                    # Reload from disk
+                    load_templates_from_disk()
+                    st.rerun()
+
+            st.markdown("---")
+
             col1, col2 = st.columns(2)
 
             with col1:
-                st.markdown("#### 💾 Save/Load Templates")
+                st.markdown("#### 💾 Save Templates")
 
                 # Save current test as template
                 save_template_name = st.text_input(
@@ -6805,10 +10845,41 @@ Return only the step descriptions, one per line, without numbering."""
                     key="save_template_name"
                 )
 
+                col_cat, col_author = st.columns(2)
+                with col_cat:
+                    # Get existing categories for suggestions
+                    existing_categories = get_template_categories() if st.session_state.test_pilot_saved_templates else []
+                    default_categories = ["General", "Login", "Checkout", "Registration", "Search", "Navigation", "Forms", "API", "E2E"]
+                    all_categories = sorted(list(set(default_categories + existing_categories)))
+
+                    save_template_category = st.selectbox(
+                        "Category",
+                        options=all_categories,
+                        key="save_template_category"
+                    )
+
+                with col_author:
+                    save_template_author = st.text_input(
+                        "Author",
+                        placeholder="Your name",
+                        key="save_template_author",
+                        value=os.environ.get('USER', 'Unknown')
+                    )
+
+                custom_category = st.text_input(
+                    "Custom Category (Optional)",
+                    placeholder="Enter new category name",
+                    key="save_template_custom_category"
+                )
+
                 col_a, col_b = st.columns(2)
                 with col_a:
-                    if st.button("💾 Save as Template", use_container_width=True):
+                    if st.button("💾 Save Template", use_container_width=True):
                         if save_template_name:
+                            # Use custom category if provided, otherwise use selected
+                            category = custom_category if custom_category else save_template_category
+                            author = save_template_author if save_template_author else "Unknown"
+
                             test_data = {
                                 'title': st.session_state.get('manual_title', ''),
                                 'description': st.session_state.get('manual_description', ''),
@@ -6816,153 +10887,272 @@ Return only the step descriptions, one per line, without numbering."""
                                 'tags': st.session_state.get('manual_tags', ''),
                                 'steps': st.session_state.test_pilot_steps.copy()
                             }
-                            save_template(save_template_name, test_data)
-                            st.success(f"✅ Template '{save_template_name}' saved!")
+                            success, message = save_template(save_template_name, test_data, category, author)
+                            if success:
+                                st.success(f"✅ {message}")
+                                # Track template save
+                                TestPilotAnalytics.track_template_action('save', save_template_name, category)
+                            else:
+                                st.error(f"❌ {message}")
                             st.rerun()
                         else:
                             st.error("Please enter a template name")
 
                 with col_b:
-                    if st.button("📤 Export to JSON", use_container_width=True):
+                    if st.button("📤 Export Current", use_container_width=True):
                         if st.session_state.test_pilot_steps:
                             export_data = {
+                                'name': save_template_name if save_template_name else f"Template_{int(time.time())}",
                                 'title': st.session_state.get('manual_title', ''),
                                 'description': st.session_state.get('manual_description', ''),
                                 'priority': st.session_state.get('manual_priority', 'Medium'),
                                 'tags': st.session_state.get('manual_tags', ''),
+                                'category': custom_category if custom_category else save_template_category,
+                                'author': save_template_author if save_template_author else "Unknown",
                                 'steps': st.session_state.test_pilot_steps,
-                                'exported_at': datetime.now().isoformat()
+                                'exported_at': datetime.now().isoformat(),
+                                'version': '1.0'
                             }
                             st.download_button(
-                                "⬇️ Download JSON",
-                                data=json.dumps(export_data, indent=2),
-                                file_name=f"test_case_{int(time.time())}.json",
-                                mime="application/json"
+                                "⬇️ Download",
+                                data=json.dumps(export_data, indent=2, ensure_ascii=False),
+                                file_name=f"template_{export_data['name'].replace(' ', '_')}.json",
+                                mime="application/json",
+                                use_container_width=True
                             )
+                        else:
+                            st.warning("No steps to export")
 
-                # Load template
+                # Export all templates
                 if st.session_state.test_pilot_saved_templates:
-                    st.markdown("#### 📂 Load Saved Template")
-                    template_options = list(st.session_state.test_pilot_saved_templates.keys())
+                    if st.button("📦 Export All Templates", use_container_width=True):
+                        all_templates_json = export_all_templates_to_json()
+                        st.download_button(
+                            "⬇️ Download All Templates",
+                            data=all_templates_json,
+                            file_name=f"all_templates_{int(time.time())}.json",
+                            mime="application/json",
+                            use_container_width=True
+                        )
+
+            with col2:
+                st.markdown("#### 📥 Import & Load Templates")
+
+                # Import from JSON file
+                uploaded_file = st.file_uploader(
+                    "Import Template(s) from JSON",
+                    type=['json'],
+                    key="import_template_json",
+                    help="Import single template or bulk export file"
+                )
+
+                if uploaded_file is not None:
+                    try:
+                        json_data = uploaded_file.read().decode('utf-8')
+                        success, message = import_template_from_json(json_data)
+                        if success:
+                            st.success(f"✅ {message}")
+                            st.rerun()
+                        else:
+                            st.error(f"❌ {message}")
+                    except Exception as e:
+                        st.error(f"Failed to read file: {str(e)}")
+
+                # Load saved templates
+                if st.session_state.test_pilot_saved_templates:
+                    st.markdown("**Load Saved Template**")
+
+                    # Category filter
+                    categories = ["All"] + get_template_categories()
+                    selected_category = st.selectbox(
+                        "Filter by Category",
+                        options=categories,
+                        key="template_category_filter"
+                    )
+
+                    # Get filtered templates
+                    if selected_category == "All":
+                        template_options = list(st.session_state.test_pilot_saved_templates.keys())
+                    else:
+                        template_options = get_templates_by_category(selected_category)
+
+                    # Sort by usage or name
+                    sort_by = st.radio(
+                        "Sort by",
+                        ["Name", "Recently Used", "Most Used"],
+                        horizontal=True,
+                        key="template_sort"
+                    )
+
+                    if sort_by == "Recently Used":
+                        template_options.sort(
+                            key=lambda x: st.session_state.test_pilot_saved_templates[x].get('last_used', ''),
+                            reverse=True
+                        )
+                    elif sort_by == "Most Used":
+                        template_options.sort(
+                            key=lambda x: st.session_state.test_pilot_saved_templates[x].get('usage_count', 0),
+                            reverse=True
+                        )
+                    else:
+                        template_options.sort()
+
                     selected_template = st.selectbox(
                         "Select Template",
                         [""] + template_options,
-                        key="selected_template"
+                        key="selected_template",
+                        format_func=lambda x: f"{x}" if x else "Choose a template..."
                     )
 
-                    col_c, col_d = st.columns(2)
+                    # Show template info
+                    if selected_template:
+                        template = st.session_state.test_pilot_saved_templates[selected_template]
+                        with st.container():
+                            st.markdown(f"""
+                            **Category:** {template.get('category', 'N/A')} |
+                            **Author:** {template.get('author', 'Unknown')} |
+                            **Version:** {template.get('version', '1.0')}
+                            **Steps:** {len(template.get('steps', []))} |
+                            **Used:** {template.get('usage_count', 0)} times
+                            **Created:** {template.get('created_at', 'N/A')[:10]}
+                            """)
+
+                    col_c, col_d, col_e = st.columns(3)
                     with col_c:
-                        if st.button("📥 Load Template", use_container_width=True):
+                        if st.button("📥 Load", use_container_width=True):
                             if selected_template:
                                 template = load_template(selected_template)
                                 if template:
+                                    # Track template load
+                                    TestPilotAnalytics.track_template_action(
+                                        'load',
+                                        selected_template,
+                                        template.get('category', 'Unknown')
+                                    )
+                                    TestPilotAnalytics.track_module_usage('templates', 'load_template')
+
                                     # Load into session state
                                     st.session_state.manual_title = template.get('title', '')
                                     st.session_state.manual_description = template.get('description', '')
                                     st.session_state.manual_priority = template.get('priority', 'Medium')
                                     st.session_state.manual_tags = template.get('tags', '')
                                     st.session_state.test_pilot_steps = template.get('steps', []).copy()
-                                    st.success(f"✅ Loaded template '{selected_template}'")
+                                    st.success(f"✅ Loaded '{selected_template}' (used {template.get('usage_count', 0)} times)")
                                     st.rerun()
+                            else:
+                                st.warning("Please select a template")
 
                     with col_d:
-                        if st.button("🗑️ Delete Template", use_container_width=True):
+                        if st.button("📤 Export", use_container_width=True):
                             if selected_template:
-                                del st.session_state.test_pilot_saved_templates[selected_template]
-                                # Also delete from disk
-                                try:
-                                    template_file = os.path.join(ROOT_DIR, 'generated_tests', 'templates',
-                                                                f"{selected_template.replace(' ', '_')}.json")
-                                    if os.path.exists(template_file):
-                                        os.remove(template_file)
-                                except:
-                                    pass
-                                st.success(f"🗑️ Deleted template '{selected_template}'")
+                                template_json = export_template_to_json(selected_template)
+                                if template_json:
+                                    st.download_button(
+                                        "⬇️ Download",
+                                        data=template_json,
+                                        file_name=f"{selected_template.replace(' ', '_')}.json",
+                                        mime="application/json",
+                                        use_container_width=True
+                                    )
+                            else:
+                                st.warning("Please select a template")
+
+                    with col_e:
+                        if st.button("🗑️ Delete", use_container_width=True):
+                            if selected_template:
+                                success, message = delete_template(selected_template)
+                                if success:
+                                    st.success(f"✅ {message}")
+                                else:
+                                    st.error(f"❌ {message}")
                                 st.rerun()
+                            else:
+                                st.warning("Please select a template")
                 else:
-                    st.info("💡 No saved templates yet. Save your first template above!")
+                    st.info("💡 No templates saved yet. Create and save your first template above!")
 
-                # Import from JSON
-                uploaded_file = st.file_uploader("📥 Import from JSON", type=['json'], key="import_json")
-                if uploaded_file:
-                    try:
-                        import_data = json.load(uploaded_file)
-                        st.session_state.manual_title = import_data.get('title', '')
-                        st.session_state.manual_description = import_data.get('description', '')
-                        st.session_state.manual_priority = import_data.get('priority', 'Medium')
-                        st.session_state.manual_tags = import_data.get('tags', '')
-                        st.session_state.test_pilot_steps = import_data.get('steps', [])
-                        st.success("✅ Test case imported successfully!")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error importing: {e}")
+            # Display template statistics
+            if st.session_state.test_pilot_saved_templates:
+                st.markdown("---")
+                st.markdown("#### 📊 Template Statistics")
+                col_stat1, col_stat2, col_stat3 = st.columns(3)
+                with col_stat1:
+                    st.metric("Total Templates", len(st.session_state.test_pilot_saved_templates))
+                with col_stat2:
+                    st.metric("Categories", len(get_template_categories()))
+                with col_stat3:
+                    total_steps = sum(len(t.get('steps', [])) for t in st.session_state.test_pilot_saved_templates.values())
+                    st.metric("Total Steps", total_steps)
 
-            with col2:
-                st.markdown("#### ⚡ Quick Actions")
-
-                col_e, col_f = st.columns(2)
-                with col_e:
-                    if st.button("🔄 Reverse Order", use_container_width=True):
-                        if st.session_state.test_pilot_steps:
-                            st.session_state.test_pilot_steps.reverse()
-                            # Renumber
-                            for i, step in enumerate(st.session_state.test_pilot_steps):
-                                step['number'] = i + 1
-                            st.rerun()
-
-                    if st.button("📋 Duplicate All", use_container_width=True):
-                        if st.session_state.test_pilot_steps:
-                            duplicated = st.session_state.test_pilot_steps.copy()
-                            for step in duplicated:
-                                new_step = step.copy()
-                                new_step['number'] = len(st.session_state.test_pilot_steps) + 1
-                                st.session_state.test_pilot_steps.append(new_step)
-                            st.rerun()
-
-                with col_f:
-                    if st.button("🔢 Auto-number", use_container_width=True):
+        # Quick Actions Section (outside template expander)
+        with st.expander("⚡ Quick Actions & Tools", expanded=False):
+            col_e, col_f = st.columns(2)
+            with col_e:
+                st.markdown("#### 🔄 Step Operations")
+                if st.button("🔄 Reverse Order", use_container_width=True):
+                    if st.session_state.test_pilot_steps:
+                        st.session_state.test_pilot_steps.reverse()
+                        # Renumber
                         for i, step in enumerate(st.session_state.test_pilot_steps):
                             step['number'] = i + 1
-                        st.success("✅ Steps renumbered")
                         st.rerun()
 
-                    if st.button("🧹 Clear All", use_container_width=True, type="secondary"):
-                        st.session_state.test_pilot_steps = []
+                if st.button("📋 Duplicate All", use_container_width=True):
+                    if st.session_state.test_pilot_steps:
+                        duplicated = st.session_state.test_pilot_steps.copy()
+                        for step in duplicated:
+                            new_step = step.copy()
+                            new_step['number'] = len(st.session_state.test_pilot_steps) + 1
+                            st.session_state.test_pilot_steps.append(new_step)
                         st.rerun()
 
-                # Step History (Recently Used)
-                if st.session_state.test_pilot_step_history:
-                    st.markdown("#### 📜 Recently Used Steps")
-                    st.markdown("Click to reuse a recent step:")
+            with col_f:
+                st.markdown("#### 🛠️ Utilities")
+                if st.button("🔢 Auto-number", use_container_width=True):
+                    for i, step in enumerate(st.session_state.test_pilot_steps):
+                        step['number'] = i + 1
+                    st.success("✅ Steps renumbered")
+                    st.rerun()
 
-                    for i, hist_step in enumerate(st.session_state.test_pilot_step_history[:5]):
-                        if st.button(f"➕ {hist_step[:60]}...", key=f"hist_{i}", use_container_width=True):
-                            st.session_state.test_pilot_steps.append({
-                                'number': len(st.session_state.test_pilot_steps) + 1,
-                                'description': hist_step
-                            })
+                if st.button("🧹 Clear All", use_container_width=True, type="secondary"):
+                    st.session_state.test_pilot_steps = []
+                    st.rerun()
+
+            # Step History (Recently Used)
+            if st.session_state.test_pilot_step_history:
+                st.markdown("---")
+                st.markdown("#### 📜 Recently Used Steps")
+                st.markdown("Click to reuse a recent step:")
+
+                for i, hist_step in enumerate(st.session_state.test_pilot_step_history[:5]):
+                    if st.button(f"➕ {hist_step[:60]}...", key=f"hist_{i}", use_container_width=True):
+                        st.session_state.test_pilot_steps.append({
+                            'number': len(st.session_state.test_pilot_steps) + 1,
+                            'description': hist_step
+                        })
+                        st.rerun()
+
+            # AI Step Suggestions
+            if AZURE_AVAILABLE and azure_client and st.session_state.test_pilot_steps:
+                st.markdown("---")
+                st.markdown("#### 💡 AI Suggestions")
+                if st.button("🤖 Get Next Step Suggestions", use_container_width=True):
+                    with st.spinner("Generating suggestions..."):
+                        suggestions = get_step_suggestions(st.session_state.test_pilot_steps, azure_client)
+                        if suggestions:
+                            st.session_state.ai_suggestions = suggestions
                             st.rerun()
 
-                # AI Step Suggestions
-                if AZURE_AVAILABLE and azure_client and st.session_state.test_pilot_steps:
-                    st.markdown("#### 💡 AI Suggestions")
-                    if st.button("🤖 Get Next Step Suggestions", use_container_width=True):
-                        with st.spinner("Generating suggestions..."):
-                            suggestions = get_step_suggestions(st.session_state.test_pilot_steps, azure_client)
-                            if suggestions:
-                                st.session_state.ai_suggestions = suggestions
-                                st.rerun()
-
-                    if hasattr(st.session_state, 'ai_suggestions') and st.session_state.ai_suggestions:
-                        st.markdown("**Suggested Next Steps:**")
-                        for i, suggestion in enumerate(st.session_state.ai_suggestions[:5]):
-                            if st.button(f"➕ {suggestion[:60]}...", key=f"sug_{i}", use_container_width=True):
-                                st.session_state.test_pilot_steps.append({
-                                    'number': len(st.session_state.test_pilot_steps) + 1,
-                                    'description': suggestion
-                                })
-                                add_to_step_history(suggestion)
-                                st.rerun()
+                if hasattr(st.session_state, 'ai_suggestions') and st.session_state.ai_suggestions:
+                    st.markdown("**Suggested Next Steps:**")
+                    for i, suggestion in enumerate(st.session_state.ai_suggestions[:5]):
+                        if st.button(f"➕ {suggestion[:60]}...", key=f"sug_{i}", use_container_width=True):
+                            st.session_state.test_pilot_steps.append({
+                                'number': len(st.session_state.test_pilot_steps) + 1,
+                                'description': suggestion
+                            })
+                            add_to_step_history(suggestion)
+                            st.rerun()
 
         st.markdown("---")
 
@@ -7156,25 +11346,25 @@ Return only the step descriptions, one per line, without numbering."""
                 # Show environment details based on mode
                 if env_config['mode'] == 'proxy':
                     st.info(f"""
-                    **Selected:** {env_config['name']}  
-                    **Mode:** 🔒 Proxy Mode  
-                    **Proxy:** {env_config['proxy']}  
+                    **Selected:** {env_config['name']}
+                    **Mode:** 🔒 Proxy Mode
+                    **Proxy:** {env_config['proxy']}
                     **User Agent:** Contains `aem_env={selected_environment}` tag
                     """)
                 elif env_config['mode'] == 'user_agent':
                     st.info(f"""
-                    **Selected:** {env_config['name']}  
-                    **Mode:** 🏷️ User Agent Mode  
-                    **Proxy:** None (direct access)  
+                    **Selected:** {env_config['name']}
+                    **Mode:** 🏷️ User Agent Mode
+                    **Proxy:** None (direct access)
                     **User Agent:** Contains `jarvis_env={selected_environment}` and `aem_env={selected_environment}` tags
-                    
+
                     ℹ️ Environment routing via user agent, not proxy
                     """)
                 else:
                     st.info(f"""
-                    **Selected:** {env_config['name']}  
-                    **Mode:** 🌐 Direct Access  
-                    **Proxy:** None  
+                    **Selected:** {env_config['name']}
+                    **Mode:** 🌐 Direct Access
+                    **Proxy:** None
                     **User Agent:** Standard Chrome UA
                     """)
         else:
@@ -7239,6 +11429,17 @@ Return only the step descriptions, one per line, without numbering."""
                                     st.success(f"✅ Script generated with browser automation!")
                                     st.markdown('</div>', unsafe_allow_html=True)
 
+                                    # Track analytics
+                                    generation_time = time.time() - int(test_case.id.split('-')[1])
+                                    TestPilotAnalytics.track_script_generation(
+                                        source='manual',
+                                        steps_count=len(test_case.steps),
+                                        duration_seconds=generation_time,
+                                        success=True,
+                                        ai_used=use_browser_automation
+                                    )
+                                    TestPilotAnalytics.track_module_usage('manual_entry', 'browser_automation', generation_time)
+
                                     # Show bug report
                                     with st.expander("🐛 Bug Analysis Report", expanded=True):
                                         st.markdown(bug_report)
@@ -7246,6 +11447,51 @@ Return only the step descriptions, one per line, without numbering."""
                                         # Add Jira ticket creation section
                                         st.markdown("---")
                                         st.markdown("### 🎫 Create Jira Tickets")
+
+                                        # Inline Jira authentication
+                                        if not st.session_state.get('test_pilot_jira_auth'):
+                                            st.info("🔐 Authenticate with Jira to create tickets directly from this report")
+
+                                            with st.form("jira_auth_inline_form"):
+                                                col1, col2 = st.columns(2)
+                                                with col1:
+                                                    jira_host = st.text_input(
+                                                        "Jira Host",
+                                                        value="https://jira.newfold.com",
+                                                        placeholder="https://your-jira-instance.com",
+                                                        help="Your Jira instance URL"
+                                                    )
+                                                    jira_username = st.text_input(
+                                                        "Username",
+                                                        placeholder="your.email@company.com"
+                                                    )
+                                                with col2:
+                                                    jira_api_token = st.text_input(
+                                                        "API Token",
+                                                        type="password",
+                                                        help="Generate from: Jira Profile → Security → API tokens"
+                                                    )
+
+                                                auth_submitted = st.form_submit_button("🔑 Authenticate", type="primary")
+
+                                                if auth_submitted:
+                                                    if jira_host and jira_username and jira_api_token:
+                                                        try:
+                                                            jira_integration = JiraZephyrIntegration()
+                                                            success, msg = jira_integration.authenticate(
+                                                                jira_host, jira_username, jira_api_token
+                                                            )
+
+                                                            if success:
+                                                                st.session_state.test_pilot_jira_auth = jira_integration
+                                                                st.success(f"✅ {msg}")
+                                                                st.rerun()
+                                                            else:
+                                                                st.error(f"❌ {msg}")
+                                                        except Exception as e:
+                                                            st.error(f"❌ Authentication failed: {str(e)}")
+                                                    else:
+                                                        st.warning("⚠️ Please fill in all Jira authentication fields")
 
                                         # Check if Jira is authenticated
                                         if st.session_state.get('test_pilot_jira_auth'):
@@ -7399,8 +11645,8 @@ Return only the step descriptions, one per line, without numbering."""
                                             st.json(test_case.metadata['captured_locators'])
 
                                     if test_case.metadata.get('screenshots'):
-                                        with st.expander("📸 Screenshots", expanded=False):
-                                            for screenshot in test_case.metadata['screenshots'][:5]:
+                                        with st.expander(f"📸 Screenshots ({len(test_case.metadata['screenshots'])} captured)", expanded=False):
+                                            for screenshot in test_case.metadata['screenshots']:
                                                 if os.path.exists(screenshot):
                                                     st.image(screenshot, caption=os.path.basename(screenshot), use_container_width=True)
 
@@ -7462,6 +11708,18 @@ Return only the step descriptions, one per line, without numbering."""
                                     st.markdown('<div class="success-message">', unsafe_allow_html=True)
                                     st.success(f"✅ Script generated successfully!")
                                     st.markdown('</div>', unsafe_allow_html=True)
+
+                                    # Track analytics
+                                    generation_time = time.time() - int(test_case.id.split('-')[1])
+                                    ai_used = AZURE_AVAILABLE and azure_client and azure_client.is_configured()
+                                    TestPilotAnalytics.track_script_generation(
+                                        source='manual',
+                                        steps_count=len(test_case.steps),
+                                        duration_seconds=generation_time,
+                                        success=True,
+                                        ai_used=ai_used
+                                    )
+                                    TestPilotAnalytics.track_module_usage('manual_entry', 'generate_script', generation_time)
 
                                     # Show preview
                                     with st.expander("📜 Preview Generated Script", expanded=True):
@@ -7592,17 +11850,66 @@ Return only the step descriptions, one per line, without numbering."""
                     st.write(test_case.preconditions)
 
             st.markdown("### 📋 Test Steps:")
+
+            # Display step summary metrics
+            total_steps = len(test_case.steps)
+            steps_with_data = sum(1 for s in test_case.steps if s.value)
+            steps_with_expected = sum(1 for s in test_case.steps if s.notes)
+
+            # Extract URLs from all steps
+            url_pattern = r'https?://[^\s<>"{}|\\^`\[\]]+|www\.[^\s<>"{}|\\^`\[\]]+'
+            all_urls = []
+            for step in test_case.steps:
+                urls = re.findall(url_pattern, step.description, re.IGNORECASE)
+                all_urls.extend(urls)
+
+            col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+            with col_m1:
+                st.metric("Total Steps", total_steps)
+            with col_m2:
+                st.metric("With Test Data", steps_with_data)
+            with col_m3:
+                st.metric("With Expected Results", steps_with_expected)
+            with col_m4:
+                st.metric("URLs Found", len(all_urls))
+
+            st.markdown("---")
+
+            # Display each step with enhanced formatting
             for step in test_case.steps:
                 with st.container():
                     st.markdown(f'<div class="step-item">', unsafe_allow_html=True)
-                    st.markdown(f"**Step {step.step_number}:** {step.description}")
 
+                    # Extract and highlight URLs in description
+                    description = step.description
+                    urls_in_step = re.findall(url_pattern, description, re.IGNORECASE)
+
+                    if urls_in_step:
+                        # Make URLs clickable
+                        for url in urls_in_step:
+                            # Ensure URL has protocol
+                            display_url = url if url.startswith(('http://', 'https://')) else f'https://{url}'
+                            clickable_link = f'<a href="{display_url}" target="_blank" style="color: #1E88E5; text-decoration: underline;">{url}</a>'
+                            description = description.replace(url, clickable_link)
+                        st.markdown(f"**Step {step.step_number}:** {description}", unsafe_allow_html=True)
+                    else:
+                        st.markdown(f"**Step {step.step_number}:** {description}")
+
+                    # Display test data with icon and masking for sensitive data
                     if step.value:
-                        st.markdown(f"*📊 Test Data:* `{step.value}`")
+                        # Mask sensitive data (passwords)
+                        display_value = step.value
+                        if any(keyword in step.description.lower() for keyword in ['password', 'pwd', 'pass', 'secret', 'token']):
+                            display_value = '*' * len(step.value) if len(step.value) > 0 else '****'
+                        st.markdown(f"📊 **Test Data:** `{display_value}`")
+
+                    # Display expected result
                     if step.notes:
-                        st.markdown(f"*✅ Expected Result:* {step.notes}")
+                        st.markdown(f"✅ **Expected Result:** {step.notes}")
+
+                    # Display actual result if available
                     if step.action:
-                        st.markdown(f"*📝 Actual Result:* {step.action}")
+                        st.markdown(f"📝 **Actual Result:** {step.action}")
 
                     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -9114,55 +13421,1630 @@ Return only the step descriptions, one per line, without numbering."""
             # Clear the trigger
             st.session_state.test_pilot_generate_from_recording_ai = False
 
+    def get_brand_display_name(brand_code: str) -> str:
+        """
+        Convert technical brand codes to user-friendly display names
+
+        Args:
+            brand_code: Technical code from directory/path (e.g., 'bhcom', 'BHCOM', 'bluehost')
+
+        Returns:
+            User-friendly brand name (e.g., 'Bluehost', 'Network Solutions')
+        """
+        brand_map = {
+            # Bluehost variations
+            'bhcom': 'Bluehost',
+            'BHCOM': 'Bluehost',
+            'bluehost': 'Bluehost',
+            'bh': 'Bluehost',
+            'BH': 'Bluehost',
+
+            # Bluehost India variations
+            'bhindia': 'Bluehost India',
+            'BHINDIA': 'Bluehost India',
+            'bhIndia': 'Bluehost India',
+            'bh_india': 'Bluehost India',
+
+            # Network Solutions variations
+            'ncom': 'Network Solutions',
+            'NCOM': 'Network Solutions',
+            'nsol': 'Network Solutions',
+            'NSOL': 'Network Solutions',
+            'networksolutions': 'Network Solutions',
+            'NetworkSolutions': 'Network Solutions',
+            'network_solutions': 'Network Solutions',
+            'NetSol': 'Network Solutions',
+
+            # Domain.com variations
+            'dcom': 'Domain.com',
+            'DCOM': 'Domain.com',
+            'domain': 'Domain.com',
+            'domaincom': 'Domain.com',
+
+            # Register.com variations
+            'rcom': 'Register.com',
+            'RCOM': 'Register.com',
+            'register': 'Register.com',
+            'registercom': 'Register.com',
+
+            # Web.com variations
+            'wcom': 'Web.com',
+            'WCOM': 'Web.com',
+            'web': 'Web.com',
+            'webcom': 'Web.com',
+
+            # HostGator variations
+            'hg': 'HostGator',
+            'HG': 'HostGator',
+            'hostgator': 'HostGator',
+            'HostGator': 'HostGator',
+            'host_gator': 'HostGator',
+
+            # HostGator India variations
+            'hgindia': 'HostGator India',
+            'HGINDIA': 'HostGator India',
+            'hg_india': 'HostGator India',
+
+            # BigRock variations
+            'bigrock': 'BigRock',
+            'BigRock': 'BigRock',
+            'BIGROCK': 'BigRock',
+            'br': 'BigRock',
+            'BR': 'BigRock',
+
+            # ResellerClub variations
+            'resellerclub': 'ResellerClub',
+            'ResellerClub': 'ResellerClub',
+            'RESELLERCLUB': 'ResellerClub',
+            'rc': 'ResellerClub',
+            'RC': 'ResellerClub',
+
+            # LogicBoxes variations
+            'logicboxes': 'LogicBoxes',
+            'LogicBoxes': 'LogicBoxes',
+            'LOGICBOXES': 'LogicBoxes',
+            'lb': 'LogicBoxes',
+            'LB': 'LogicBoxes',
+        }
+
+        # Try exact match first
+        if brand_code in brand_map:
+            return brand_map[brand_code]
+
+        # Try case-insensitive match
+        brand_lower = brand_code.lower()
+        for key, value in brand_map.items():
+            if key.lower() == brand_lower:
+                return value
+
+        # If no match, return title-cased version of the code
+        return brand_code.title() if brand_code else 'Unknown'
+
     # Tab 5: Generated Scripts
     with tab5:
-        st.markdown("### Generated Scripts")
+        st.markdown("### 📊 Generated Scripts Repository")
+        st.markdown("Browse and manage all TestPilot-generated Robot Framework test scripts")
 
-        # List generated scripts
-        if os.path.exists(engine.output_dir):
-            script_files = [f for f in os.listdir(engine.output_dir)
-                           if f.startswith('test_pilot_') and f.endswith('.robot')]
+        # Time filter for recently generated scripts
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            days_filter_scripts = st.selectbox(
+                "Show scripts from",
+                options=[1, 3, 7, 14, 30, 60, 90],
+                index=3,  # Default to 14 days
+                format_func=lambda x: f"Last {x} day{'s' if x > 1 else ''}",
+                key="scripts_days_filter"
+            )
+        with col2:
+            if st.button("🔄 Refresh", use_container_width=True):
+                st.rerun()
 
-            if script_files:
-                st.markdown(f"Found {len(script_files)} generated scripts")
+        # Collect generated scripts from TestPilot's generated directory
+        cutoff_time = datetime.now() - timedelta(days=days_filter_scripts)
+        all_scripts = []
 
-                # Sort by modification time (newest first)
-                script_files.sort(
-                    key=lambda x: os.path.getmtime(os.path.join(engine.output_dir, x)),
+        # Only look in the generated scripts directory
+        generated_dir = os.path.join(ROOT_DIR, "tests", "testsuite", "ui", "generated")
+
+        if os.path.exists(generated_dir):
+            for root, dirs, files in os.walk(generated_dir):
+                for file in files:
+                    if file.endswith('.robot'):
+                        file_path = os.path.join(root, file)
+                        mtime = datetime.fromtimestamp(os.path.getmtime(file_path))
+
+                        # Only include recent files
+                        if mtime >= cutoff_time:
+                            # Extract brand from path structure
+                            # Path format: .../tests/testsuite/ui/generated/brand/category/script.robot
+                            # or: .../tests/testsuite/ui/generated/brand/script.robot
+                            rel_path = os.path.relpath(file_path, generated_dir)
+                            path_parts = rel_path.split(os.sep)
+
+                            # First part is the brand code (bhcom, bhindia, etc.)
+                            brand_code = path_parts[0] if len(path_parts) > 1 else 'unknown'
+
+                            # Convert to user-friendly brand name
+                            brand_display = get_brand_display_name(brand_code)
+
+                            # Second part could be category/component if it exists
+                            category = path_parts[1] if len(path_parts) > 2 else ''
+
+                            all_scripts.append({
+                                'path': file_path,
+                                'name': file,
+                                'mtime': mtime,
+                                'size': os.path.getsize(file_path),
+                                'brand_code': brand_code,  # Technical code (bhcom, ncom, etc.)
+                                'brand': brand_display,     # Display name (Bluehost, Network Solutions, etc.)
+                                'category': category if category and not category.endswith('.robot') else '',
+                                'full_path': rel_path
+                            })
+
+        if all_scripts:
+            # Sort by modification time (newest first)
+            all_scripts.sort(key=lambda x: x['mtime'], reverse=True)
+
+            # Statistics
+            st.markdown("#### 📈 Script Overview")
+            col1, col2, col3, col4 = st.columns(4)
+
+            with col1:
+                st.metric("Total Scripts", len(all_scripts))
+
+            with col2:
+                brands = set(s['brand'] for s in all_scripts if s['brand'] != 'unknown')
+                st.metric("Brands", len(brands))
+
+            with col3:
+                categories = set(s['category'] for s in all_scripts if s['category'])
+                st.metric("Categories", len(categories))
+
+            with col4:
+                # Average scripts per brand
+                avg_per_brand = len(all_scripts) / max(len(brands), 1)
+                st.metric("Avg/Brand", f"{avg_per_brand:.1f}")
+
+            st.markdown("---")
+
+            # Filters
+            col1, col2 = st.columns(2)
+            with col1:
+                brand_filter = st.selectbox(
+                    "Filter by Brand",
+                    options=["All"] + sorted(brands),
+                    key="script_brand_filter"
+                )
+            with col2:
+                # Get categories for the selected brand or all categories
+                if brand_filter != "All":
+                    available_categories = set(s['category'] for s in all_scripts
+                                              if s['brand'] == brand_filter and s['category'])
+                else:
+                    available_categories = categories
+
+                category_filter = st.selectbox(
+                    "Filter by Category",
+                    options=["All"] + sorted(available_categories),
+                    key="script_category_filter"
+                ) if available_categories else None
+
+            # Apply filters
+            filtered_scripts = all_scripts
+            if brand_filter != "All":
+                filtered_scripts = [s for s in filtered_scripts if s['brand'] == brand_filter]
+            if category_filter and category_filter != "All":
+                filtered_scripts = [s for s in filtered_scripts if s['category'] == category_filter]
+
+            st.markdown(f"#### 📄 Scripts ({len(filtered_scripts)} found)")
+
+            # Display scripts
+            for idx, script in enumerate(filtered_scripts[:50]):  # Limit to 50 for performance
+                # Build display title
+                title_parts = [script['name']]
+                if script['brand']:
+                    title_parts.append(script['brand'])
+                if script['category']:
+                    title_parts.append(script['category'])
+                display_title = f"🤖 {' - '.join(title_parts)}"
+
+                with st.expander(display_title, expanded=False):
+                    col1, col2, col3, col4 = st.columns(4)
+
+                    with col1:
+                        # Show both display name and code for clarity
+                        brand_info = f"{script['brand']}"
+                        if script['brand_code'] and script['brand_code'].lower() != script['brand'].lower():
+                            brand_info += f" ({script['brand_code']})"
+                        st.markdown(f"**Brand:** {brand_info}")
+                    with col2:
+                        st.markdown(f"**Category:** {script['category'] or 'General'}")
+                    with col3:
+                        st.markdown(f"**Size:** {script['size']:,} bytes")
+                    with col4:
+                        st.markdown(f"**Modified:** {script['mtime'].strftime('%Y-%m-%d %H:%M')}")
+
+                    # Read and display script
+                    try:
+                        with open(script['path'], 'r', encoding='utf-8') as f:
+                            content = f.read()
+
+                        # Show preview
+                        st.code(content, language='robotframework', line_numbers=True)
+
+                        # Download button
+                        st.download_button(
+                            label="⬇️ Download Script",
+                            data=content,
+                            file_name=script['name'],
+                            mime="text/plain",
+                            key=f"download_script_{idx}"
+                        )
+
+                        # Show file path
+                        st.caption(f"📂 Path: {script['path']}")
+
+                    except Exception as e:
+                        st.error(f"Error reading script: {e}")
+
+            if len(filtered_scripts) > 50:
+                st.info(f"📌 Showing first 50 of {len(filtered_scripts)} scripts. Use filters to narrow down results.")
+
+        else:
+            st.info(f"📭 No Robot Framework scripts generated in the last {days_filter_scripts} day(s).\n\n"
+                   "Generate your first test script using one of the input tabs (Manual Entry, Jira/Zephyr, Upload Recording, or Record & Playback).")
+
+            # Show helpful tips
+            with st.expander("💡 Getting Started Tips"):
+                st.markdown("""
+                **How to generate test scripts:**
+                1. Go to the **Manual Entry** tab to write test steps manually
+                2. Use the **Jira/Zephyr** tab to import test cases
+                3. Upload a JSON recording in the **Upload Recording** tab
+                4. Use **Record & Playback** to capture live interactions
+                
+                Once generated, scripts will appear here automatically.
+                """)
+
+    # Tab 6: Analytics & Metrics
+    with tab6:
+        st.markdown("### 📈 Analytics & Metrics Overview")
+        st.markdown("Real-time usage statistics and performance metrics")
+
+        # Time range selector and actions
+        col1, col2, col3 = st.columns([2, 1, 1])
+        with col1:
+            days_filter = st.selectbox(
+                "Time Range",
+                options=[7, 14, 30, 60, 90, 180, 365],
+                index=2,  # Default to 30 days
+                format_func=lambda x: f"Last {x} days"
+            )
+        with col2:
+            if st.button("🔄 Refresh Data", use_container_width=True):
+                st.rerun()
+        with col3:
+            if st.button("🔗 Sync Templates", use_container_width=True,
+                        help="Sync existing templates with analytics"):
+                with st.spinner("Syncing templates..."):
+                    synced_count = sync_templates_with_analytics()
+                    if synced_count > 0:
+                        st.success(f"✅ Synced {synced_count} template(s)")
+                        st.rerun()
+                    else:
+                        st.info("ℹ️ All templates already synced")
+
+        # Get usage statistics
+        with st.spinner("Loading analytics..."):
+            stats = TestPilotAnalytics.get_usage_statistics(days=days_filter)
+
+        # Key Metrics Row
+        st.markdown("#### 📊 Key Performance Indicators")
+        col1, col2, col3, col4, col5 = st.columns(5)
+
+        with col1:
+            st.metric(
+                "Total Events",
+                f"{stats['total_events']:,}",
+                help="Total tracked events in selected period"
+            )
+
+        with col2:
+            st.metric(
+                "Scripts Generated",
+                f"{stats['script_generations']:,}",
+                delta=f"{stats['successful_generations']} successful",
+                help="Total script generation attempts"
+            )
+
+        with col3:
+            success_rate = (stats['successful_generations'] / max(stats['script_generations'], 1)) * 100
+            st.metric(
+                "Success Rate",
+                f"{success_rate:.1f}%",
+                help="Percentage of successful script generations"
+            )
+
+        with col4:
+            st.metric(
+                "Total Steps",
+                f"{stats['total_steps_generated']:,}",
+                help="Total test steps generated across all scripts"
+            )
+
+        with col5:
+            st.metric(
+                "Active Users",
+                stats['unique_users'],
+                help="Unique users in selected period"
+            )
+
+        st.markdown("---")
+
+        # Secondary Metrics
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            st.metric(
+                "Avg Steps/Script",
+                f"{stats['avg_steps_per_script']:.1f}",
+                help="Average number of steps per generated script"
+            )
+
+        with col2:
+            st.metric(
+                "Avg Generation Time",
+                f"{stats['avg_generation_time']:.2f}s",
+                help="Average time to generate a script"
+            )
+
+        with col3:
+            st.metric(
+                "AI Interactions",
+                f"{stats['ai_interactions']:,}",
+                help="Total AI model API calls"
+            )
+
+        with col4:
+            st.metric(
+                "Tokens Used",
+                f"{stats['total_tokens_used']:,}",
+                help="Total tokens consumed by AI operations"
+            )
+
+        st.markdown("---")
+
+        # Source Breakdown
+        if stats['source_breakdown']:
+            st.markdown("#### 🎯 Script Generation Sources")
+
+            col1, col2 = st.columns([2, 1])
+
+            with col1:
+                # Create bar chart data
+                sources = list(stats['source_breakdown'].keys())
+                counts = list(stats['source_breakdown'].values())
+
+                # Display as metrics in columns
+                cols = st.columns(len(sources))
+                for idx, (source, count) in enumerate(stats['source_breakdown'].items()):
+                    with cols[idx]:
+                        percentage = (count / stats['script_generations']) * 100
+                        st.metric(
+                            source.replace('_', ' ').title(),
+                            count,
+                            delta=f"{percentage:.1f}%"
+                        )
+
+            with col2:
+                st.markdown("**Source Distribution**")
+                for source, count in stats['source_breakdown'].items():
+                    percentage = (count / stats['script_generations']) * 100
+                    st.progress(percentage / 100, text=f"{source}: {percentage:.1f}%")
+
+        # Daily Activity
+        if stats['daily_activity']:
+            st.markdown("---")
+            st.markdown("#### 📅 Daily Activity")
+
+            # Sort by date
+            sorted_dates = sorted(stats['daily_activity'].keys())
+            activity_data = [stats['daily_activity'][date] for date in sorted_dates]
+
+            # Create a simple visualization using metrics
+            st.markdown(f"**Activity over last {len(sorted_dates)} days**")
+
+            # Show last 7 days in detail
+            recent_dates = sorted_dates[-7:] if len(sorted_dates) > 7 else sorted_dates
+            cols = st.columns(len(recent_dates))
+
+            for idx, date in enumerate(recent_dates):
+                with cols[idx]:
+                    st.metric(
+                        date[-5:],  # Show MM-DD
+                        stats['daily_activity'][date],
+                        help=date
+                    )
+
+        # Template Statistics
+        st.markdown("---")
+        st.markdown("#### 📚 Template Usage")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.metric(
+                "Templates Created",
+                stats['template_saves'],
+                help="Total templates saved"
+            )
+
+        with col2:
+            st.metric(
+                "Templates Reused",
+                stats['template_reuses'],
+                help="Times templates were loaded/reused"
+            )
+
+        # Error Statistics
+        st.markdown("---")
+        st.markdown("#### ⚠️ Error & Reliability Metrics")
+
+        error_stats = TestPilotAnalytics.get_error_statistics(days=days_filter)
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            st.metric(
+                "Total Errors",
+                error_stats['total_errors'],
+                help="Total errors encountered"
+            )
+
+        with col2:
+            error_rate_color = "🟢" if error_stats['error_rate'] < 5 else "🟡" if error_stats['error_rate'] < 15 else "🔴"
+            st.metric(
+                "Error Rate",
+                f"{error_rate_color} {error_stats['error_rate']:.1f}%",
+                delta=f"{error_stats['generation_failures']} generation failures",
+                delta_color="inverse",
+                help="Percentage of operations that failed"
+            )
+
+        with col3:
+            st.metric(
+                "AI Call Failures",
+                error_stats['ai_failures'],
+                help="Failed AI interactions"
+            )
+
+        with col4:
+            reliability = 100 - error_stats['error_rate']
+            st.metric(
+                "Reliability Score",
+                f"{reliability:.1f}%",
+                help="Success rate across all operations"
+            )
+
+        if error_stats['most_common_errors']:
+            st.markdown("**Most Common Error Sources**")
+            for module, count in error_stats['most_common_errors'][:3]:
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.text(f"• {module.replace('_', ' ').title()}")
+                with col2:
+                    st.text(f"{count} errors")
+
+        # Quality Metrics
+        st.markdown("---")
+        st.markdown("#### ✨ Script Quality Metrics")
+
+        quality_metrics = TestPilotAnalytics.get_quality_metrics(days=days_filter)
+
+        if quality_metrics['total_scripts'] > 0:
+            col1, col2, col3, col4 = st.columns(4)
+
+            with col1:
+                st.metric(
+                    "Avg Steps/Script",
+                    f"{quality_metrics['avg_steps']:.1f}",
+                    help="Average number of steps per script"
+                )
+
+            with col2:
+                st.metric(
+                    "Median Steps",
+                    f"{quality_metrics['median_steps']:.1f}",
+                    help="Median number of steps per script"
+                )
+
+            with col3:
+                consistency_color = "🟢" if quality_metrics['consistency_score'] > 80 else "🟡" if quality_metrics['consistency_score'] > 60 else "🔴"
+                st.metric(
+                    "Consistency Score",
+                    f"{consistency_color} {quality_metrics['consistency_score']:.1f}",
+                    help="Script consistency (lower variation = higher score)"
+                )
+
+            with col4:
+                avg_time = sum(quality_metrics['generation_times']) / len(quality_metrics['generation_times']) if quality_metrics['generation_times'] else 0
+                st.metric(
+                    "Avg Generation Time",
+                    f"{avg_time:.2f}s",
+                    help="Average time to generate a script"
+                )
+
+            # Steps distribution
+            st.markdown("**Steps Distribution**")
+            col1, col2, col3, col4 = st.columns(4)
+
+            for idx, (range_label, count) in enumerate(quality_metrics['steps_distribution'].items()):
+                with [col1, col2, col3, col4][idx]:
+                    percentage = (count / quality_metrics['total_scripts']) * 100
+                    st.metric(
+                        f"{range_label} steps",
+                        count,
+                        delta=f"{percentage:.1f}%"
+                    )
+        else:
+            st.info("No quality metrics available yet. Generate scripts to see quality analysis.")
+
+        # Comparison with previous period
+        st.markdown("---")
+        st.markdown("#### 📊 Period Comparison")
+
+        comparison = TestPilotAnalytics.get_comparison_metrics(days=days_filter, compare_days=days_filter)
+
+        if comparison.get('comparison_available'):
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                # Handle infinity for display
+                if comparison.get('is_new_deployment'):
+                    delta_text = "🆕 New deployment"
+                else:
+                    delta_text = f"{comparison['scripts_change']:+d} vs previous period"
+
+                st.metric(
+                    "Scripts Generated",
+                    stats['script_generations'],
+                    delta=delta_text,
+                    help=f"Comparing last {days_filter} days to previous {comparison['previous_period_days']} days"
+                )
+
+            with col2:
+                # Handle success change display
+                if comparison.get('is_new_deployment'):
+                    delta_text = "🆕 New"
+                else:
+                    delta_text = f"{comparison['success_change']:+d} vs previous period"
+
+                st.metric(
+                    "Successful Generations",
+                    stats['successful_generations'],
+                    delta=delta_text
+                )
+
+            with col3:
+                # Handle AI calls change display
+                if comparison.get('is_new_deployment'):
+                    delta_text = "🆕 New"
+                else:
+                    delta_text = f"{comparison['ai_calls_change']:+d} vs previous period"
+
+                st.metric(
+                    "AI Interactions",
+                    stats['ai_interactions'],
+                    delta=delta_text
+                )
+
+            # Growth trends with proper infinity handling
+            scripts_change_pct = comparison.get('scripts_change_pct', 0)
+            if comparison.get('is_new_deployment'):
+                st.success("🚀 **New Deployment:** This is the first period with activity!")
+            elif not isinstance(scripts_change_pct, (int, float)) or abs(scripts_change_pct) == float('inf'):
+                st.info("📊 **Trend:** Significant growth from baseline")
+            elif abs(scripts_change_pct) > 0.1:
+                growth_icon = "📈" if scripts_change_pct > 0 else "📉"
+                st.markdown(f"{growth_icon} **Trend:** {scripts_change_pct:+.1f}% change in script generation activity")
+        else:
+            st.info("Period comparison requires more historical data. Keep using TestPilot to enable trend analysis.")
+
+    # Tab 7: Module Usage
+    with tab7:
+        st.markdown("### 🎯 Module Usage Statistics")
+        st.markdown("Detailed breakdown of feature usage and engagement")
+
+        # Time range selector
+        days_filter_module = st.selectbox(
+            "Time Range",
+            options=[7, 14, 30, 60, 90],
+            index=2,
+            format_func=lambda x: f"Last {x} days",
+            key="module_days_filter"
+        )
+
+        with st.spinner("Loading module statistics..."):
+            stats = TestPilotAnalytics.get_usage_statistics(days=days_filter_module)
+
+        if stats['module_usage']:
+            st.markdown("#### 📊 Feature Usage Breakdown")
+
+            # Sort modules by usage
+            sorted_modules = sorted(
+                stats['module_usage'].items(),
+                key=lambda x: x[1],
+                reverse=True
+            )
+
+            # Display each module's stats
+            for module, count in sorted_modules:
+                with st.expander(f"**{module.replace('_', ' ').title()}** - {count} uses", expanded=True):
+                    col1, col2, col3 = st.columns(3)
+
+                    with col1:
+                        st.metric("Usage Count", count)
+
+                    with col2:
+                        percentage = (count / stats['total_events']) * 100
+                        st.metric("% of Total Activity", f"{percentage:.2f}%")
+
+                    with col3:
+                        # Calculate usage per day
+                        usage_per_day = count / days_filter_module
+                        st.metric("Avg Uses/Day", f"{usage_per_day:.2f}")
+
+                    # Progress bar
+                    max_usage = max(c for _, c in sorted_modules)
+                    progress_pct = (count / max_usage) * 100
+                    st.progress(progress_pct / 100)
+
+            st.markdown("---")
+
+            # Module comparison
+            st.markdown("#### 📈 Module Comparison")
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.markdown("**Most Used Features**")
+                top_3 = sorted_modules[:3]
+                for idx, (module, count) in enumerate(top_3, 1):
+                    st.markdown(f"{idx}. **{module.replace('_', ' ').title()}** - {count} uses")
+
+            with col2:
+                st.markdown("**Feature Adoption**")
+                total_modules = len(sorted_modules)
+                active_modules = sum(1 for _, count in sorted_modules if count > 0)
+                adoption_rate = (active_modules / total_modules) * 100 if total_modules > 0 else 0
+                st.metric("Active Features", f"{active_modules}/{total_modules}")
+                st.metric("Adoption Rate", f"{adoption_rate:.1f}%")
+
+        else:
+            st.info("📊 No module usage data available yet. Start using TestPilot features to see statistics here.")
+
+        # Source breakdown visualization
+        if stats['source_breakdown']:
+            st.markdown("---")
+            st.markdown("#### 🎯 Test Creation Methods")
+
+            total_scripts = sum(stats['source_breakdown'].values())
+
+            for source, count in sorted(stats['source_breakdown'].items(), key=lambda x: x[1], reverse=True):
+                percentage = (count / total_scripts) * 100
+
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.markdown(f"**{source.replace('_', ' ').title()}**")
+                    st.progress(percentage / 100)
+                with col2:
+                    st.metric("", f"{count} ({percentage:.1f}%)")
+
+    # Tab 8: AI Performance
+    with tab8:
+        st.markdown("### 🤖 AI Performance Metrics")
+        st.markdown("Azure OpenAI model performance and token usage analytics")
+
+        # Time range selector
+        days_filter_ai = st.selectbox(
+            "Time Range",
+            options=[7, 14, 30, 60, 90],
+            index=2,
+            format_func=lambda x: f"Last {x} days",
+            key="ai_days_filter"
+        )
+
+        with st.spinner("Loading AI performance data..."):
+            ai_metrics = TestPilotAnalytics.get_ai_performance_metrics(days=days_filter_ai)
+
+        if ai_metrics['total_ai_calls'] > 0:
+            # Key AI Metrics
+            st.markdown("#### 🎯 AI Performance Overview")
+
+            col1, col2, col3, col4 = st.columns(4)
+
+            with col1:
+                st.metric(
+                    "Total AI Calls",
+                    f"{ai_metrics['total_ai_calls']:,}",
+                    help="Total API calls to AI models"
+                )
+
+            with col2:
+                st.metric(
+                    "Success Rate",
+                    f"{ai_metrics['success_rate']:.1f}%",
+                    delta=f"{ai_metrics['successful_calls']} successful",
+                    help="Percentage of successful AI interactions"
+                )
+
+            with col3:
+                st.metric(
+                    "Avg Response Time",
+                    f"{ai_metrics['avg_response_time']:.2f}s",
+                    help="Average AI response time"
+                )
+
+            with col4:
+                st.metric(
+                    "Failed Calls",
+                    ai_metrics['failed_calls'],
+                    delta=f"{100-ai_metrics['success_rate']:.1f}% failure rate" if ai_metrics['failed_calls'] > 0 else "0% failure rate",
+                    delta_color="inverse",
+                    help="Number of failed AI interactions"
+                )
+
+            st.markdown("---")
+
+            # Token Usage
+            st.markdown("#### 🎫 Token Usage & Cost Analysis")
+
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                st.metric(
+                    "Total Tokens",
+                    f"{ai_metrics['total_tokens']:,}",
+                    help="Total tokens consumed (input + output)"
+                )
+                st.metric(
+                    "Input Tokens",
+                    f"{ai_metrics['total_input_tokens']:,}",
+                    help="Tokens sent to AI model"
+                )
+                st.metric(
+                    "Output Tokens",
+                    f"{ai_metrics['total_output_tokens']:,}",
+                    help="Tokens generated by AI model"
+                )
+
+            with col2:
+                st.metric(
+                    "Avg Tokens/Call",
+                    f"{ai_metrics['avg_tokens_per_call']:.0f}",
+                    help="Average tokens per API call"
+                )
+
+                # Token efficiency
+                if ai_metrics['total_input_tokens'] > 0:
+                    efficiency_ratio = ai_metrics['total_output_tokens'] / ai_metrics['total_input_tokens']
+                    st.metric(
+                        "Output/Input Ratio",
+                        f"{efficiency_ratio:.2f}x",
+                        help="Ratio of output tokens to input tokens"
+                    )
+
+            with col3:
+                st.metric(
+                    "Estimated Cost",
+                    f"${ai_metrics['token_cost_estimate']:.2f}",
+                    help="Estimated cost based on GPT-4.1-mini pricing ($0.80/1M input, $3.20/1M output)"
+                )
+
+                # Cost per script with validation
+                stats = TestPilotAnalytics.get_usage_statistics(days=days_filter_ai)
+                if stats['successful_generations'] > 0 and ai_metrics['token_cost_estimate'] > 0:
+                    cost_per_script = ai_metrics['token_cost_estimate'] / stats['successful_generations']
+                    st.metric(
+                        "Cost per Script",
+                        f"${cost_per_script:.4f}",
+                        help="Average cost per generated script"
+                    )
+                elif stats['successful_generations'] > 0:
+                    st.metric(
+                        "Cost per Script",
+                        "$0.0000",
+                        help="No AI costs recorded"
+                    )
+                else:
+                    st.metric(
+                        "Cost per Script",
+                        "N/A",
+                        help="No scripts generated yet"
+                    )
+
+            st.markdown("---")
+
+            # Model Cost Comparison
+            st.markdown("#### 🔄 Model Cost Comparison")
+            st.markdown("Compare current model with upgrade options")
+
+            if 'pricing_breakdown' in ai_metrics:
+                col1, col2, col3 = st.columns(3)
+
+                with col1:
+                    st.markdown("**Current: GPT-4.1-mini**")
+                    st.caption("Standard model")
+                    gpt41_data = ai_metrics['pricing_breakdown']['gpt41_mini']
+
+                    st.metric(
+                        "Total Cost",
+                        f"${gpt41_data['total_cost']:.2f}",
+                        help="Current spend with GPT-4.1-mini"
+                    )
+
+                    col1a, col1b = st.columns(2)
+                    with col1a:
+                        st.metric(
+                            "Input",
+                            f"${gpt41_data['input_cost']:.2f}",
+                            help=f"${gpt41_data['input_price_per_1m']:.2f}/1M"
+                        )
+                    with col1b:
+                        st.metric(
+                            "Output",
+                            f"${gpt41_data['output_cost']:.2f}",
+                            help=f"${gpt41_data['output_price_per_1m']:.2f}/1M"
+                        )
+
+                    st.markdown("**Pricing:**")
+                    st.markdown(f"- Input: ${gpt41_data['input_price_per_1m']:.2f}/1M")
+                    st.markdown(f"- Output: ${gpt41_data['output_price_per_1m']:.2f}/1M")
+
+                with col2:
+                    st.markdown("**Option 1: GPT-5-mini**")
+                    st.caption("Faster, cheaper for well-defined tasks")
+                    gpt5mini_data = ai_metrics['pricing_breakdown']['gpt5_mini']
+
+                    cost_change = gpt5mini_data['total_cost'] - gpt41_data['total_cost']
+                    cost_change_pct = (cost_change / max(gpt41_data['total_cost'], 0.01)) * 100
+
+                    st.metric(
+                        "Total Cost",
+                        f"${gpt5mini_data['total_cost']:.2f}",
+                        delta=f"{cost_change:+.2f} ({cost_change_pct:+.1f}%)",
+                        delta_color="inverse" if cost_change > 0 else "normal",
+                        help="Projected cost with GPT-5-mini"
+                    )
+
+                    col2a, col2b = st.columns(2)
+                    with col2a:
+                        st.metric(
+                            "Input",
+                            f"${gpt5mini_data['input_cost']:.2f}",
+                            help=f"${gpt5mini_data['input_price_per_1m']:.2f}/1M"
+                        )
+                    with col2b:
+                        st.metric(
+                            "Output",
+                            f"${gpt5mini_data['output_cost']:.2f}",
+                            help=f"${gpt5mini_data['output_price_per_1m']:.2f}/1M"
+                        )
+
+                    st.markdown("**Pricing:**")
+                    st.markdown(f"- Input: ${gpt5mini_data['input_price_per_1m']:.2f}/1M")
+                    st.markdown(f"- Output: ${gpt5mini_data['output_price_per_1m']:.2f}/1M")
+
+                with col3:
+                    st.markdown("**Option 2: GPT-5.1**")
+                    st.caption("Best for coding & agentic tasks")
+                    gpt51_data = ai_metrics['pricing_breakdown']['gpt51']
+
+                    cost_increase = gpt51_data['total_cost'] - gpt41_data['total_cost']
+                    cost_increase_pct = (cost_increase / max(gpt41_data['total_cost'], 0.01)) * 100
+
+                    st.metric(
+                        "Total Cost",
+                        f"${gpt51_data['total_cost']:.2f}",
+                        delta=f"+${cost_increase:.2f} ({cost_increase_pct:.1f}%)",
+                        delta_color="inverse",
+                        help="Projected cost with GPT-5.1"
+                    )
+
+                    col3a, col3b = st.columns(2)
+                    with col3a:
+                        st.metric(
+                            "Input",
+                            f"${gpt51_data['input_cost']:.2f}",
+                            help=f"${gpt51_data['input_price_per_1m']:.2f}/1M"
+                        )
+                    with col3b:
+                        st.metric(
+                            "Output",
+                            f"${gpt51_data['output_cost']:.2f}",
+                            help=f"${gpt51_data['output_price_per_1m']:.2f}/1M"
+                        )
+
+                    st.markdown("**Pricing:**")
+                    st.markdown(f"- Input: ${gpt51_data['input_price_per_1m']:.2f}/1M")
+                    st.markdown(f"- Output: ${gpt51_data['output_price_per_1m']:.2f}/1M")
+
+                # Detailed Comparison
+                st.markdown("---")
+                st.markdown("**📊 Detailed Model Comparison**")
+
+                comparison_data = {
+                    'Metric': ['Total Cost', 'Cost/Script', 'Input Price', 'Output Price', 'Cost Change', 'Use Case'],
+                    'GPT-4.1-mini\n(Current)': [
+                        f"${gpt41_data['total_cost']:.2f}",
+                        f"${gpt41_data['total_cost'] / max(stats['successful_generations'], 1):.4f}",
+                        f"${gpt41_data['input_price_per_1m']:.2f}/1M",
+                        f"${gpt41_data['output_price_per_1m']:.2f}/1M",
+                        "Baseline",
+                        "Standard tasks"
+                    ],
+                    'GPT-5.1-mini\n(Budget Option)': [
+                        f"${gpt5mini_data['total_cost']:.2f}",
+                        f"${gpt5mini_data['total_cost'] / max(stats['successful_generations'], 1):.4f}",
+                        f"${gpt5mini_data['input_price_per_1m']:.2f}/1M",
+                        f"${gpt5mini_data['output_price_per_1m']:.2f}/1M",
+                        f"{cost_change:+.2f} ({cost_change_pct:+.1f}%)",
+                        "Well-defined, faster"
+                    ],
+                    'GPT-5.1\n(Premium)': [
+                        f"${gpt51_data['total_cost']:.2f}",
+                        f"${gpt51_data['total_cost'] / max(stats['successful_generations'], 1):.4f}",
+                        f"${gpt51_data['input_price_per_1m']:.2f}/1M",
+                        f"${gpt51_data['output_price_per_1m']:.2f}/1M",
+                        f"+${cost_increase:.2f} (+{cost_increase_pct:.1f}%)",
+                        "Complex, high-quality"
+                    ]
+                }
+
+                import pandas as pd
+                df_comparison = pd.DataFrame(comparison_data)
+                st.dataframe(df_comparison, use_container_width=True, hide_index=True)
+
+                # Upgrade Recommendations
+                st.markdown("---")
+                st.markdown("**💡 Upgrade Recommendations**")
+
+                # Option 1: GPT-5.1-mini
+                with st.expander("🎯 Option 1: GPT-5.1-mini (Budget-Friendly Upgrade)", expanded=True):
+                    col1, col2 = st.columns([2, 1])
+
+                    with col1:
+                        st.markdown("**Best For:**")
+                        st.markdown("""
+                        - Well-defined, repetitive test scenarios
+                        - Standard UI/API test generation
+                        - High-volume script generation
+                        - Budget-conscious teams
+                        - Faster execution time needed
+                        """)
+
+                        st.markdown("**Expected Improvements:**")
+                        st.markdown("""
+                        - ⚡ Faster response times
+                        - 💰 **Lower cost** than current model
+                        - ✨ Better than GPT-4.1-mini for structured tasks
+                        - 🎯 Good balance of speed, cost, and quality
+                        """)
+
+                    with col2:
+                        if cost_change < 0:
+                            st.success(f"**💰 COST SAVINGS!**\n\n{cost_change_pct:.1f}% reduction\n\nSave ${abs(cost_change):.2f}")
+                        else:
+                            st.info(f"**Cost Change:**\n\n+{cost_change_pct:.1f}%\n\n+${cost_change:.2f}")
+
+                        if stats['successful_generations'] > 0:
+                            cost_per_script_mini = gpt5mini_data['total_cost'] / stats['successful_generations']
+                            cost_per_script_current = gpt41_data['total_cost'] / stats['successful_generations']
+                            st.metric("Per Script", f"${cost_per_script_mini:.4f}",
+                                    delta=f"{cost_per_script_mini - cost_per_script_current:+.4f}")
+
+                # Option 2: GPT-5.1
+                with st.expander("🚀 Option 2: GPT-5.1 (Premium Upgrade)", expanded=False):
+                    col1, col2 = st.columns([2, 1])
+
+                    with col1:
+                        st.markdown("**Best For:**")
+                        st.markdown("""
+                        - Complex test scenarios
+                        - High-quality requirements
+                        - Mission-critical applications
+                        - Advanced agentic workflows
+                        - Edge case coverage critical
+                        """)
+
+                        st.markdown("**Expected Improvements:**")
+                        st.markdown("""
+                        - 🏆 Best-in-class coding capabilities
+                        - 🤖 Superior agentic task handling
+                        - ✨ Highest quality code generation
+                        - 🎯 Better edge case coverage
+                        - 📈 Reduced manual rework
+                        """)
+
+                    with col2:
+                        st.warning(f"**Cost Increase:**\n\n+{cost_increase_pct:.1f}%\n\n+${cost_increase:.2f}")
+
+                        if stats['successful_generations'] > 0:
+                            cost_per_script_premium = gpt51_data['total_cost'] / stats['successful_generations']
+                            cost_per_script_current = gpt41_data['total_cost'] / stats['successful_generations']
+                            st.metric("Per Script", f"${cost_per_script_premium:.4f}",
+                                    delta=f"+${cost_per_script_premium - cost_per_script_current:.4f}")
+
+                # Quick Recommendation
+                st.markdown("---")
+                st.markdown("**🎯 Quick Recommendations:**")
+
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    if cost_change < 0:
+                        st.success("""
+                        **✅ GPT-5.1-mini is RECOMMENDED**
+                        
+                        - **Lower cost** than current model
+                        - Better performance for structured tasks
+                        - Faster execution
+                        - Easy decision: upgrade immediately!
+                        """)
+                    elif cost_change_pct < 20:
+                        st.success("""
+                        **✅ GPT-5.1-mini is a GOOD CHOICE**
+                        
+                        - Minimal cost increase (<20%)
+                        - Better for well-defined tasks
+                        - Faster response times
+                        - Consider for high-volume scenarios
+                        """)
+                    else:
+                        st.info("""
+                        **⚖️ GPT-5.1-mini: EVALUATE BENEFITS**
+                        
+                        - Consider speed improvements
+                        - Evaluate task complexity
+                        - Test on pilot scenarios
+                        - Compare quality vs cost
+                        """)
+
+                with col2:
+                    if cost_increase_pct < 100:
+                        st.info("""
+                        **⚖️ GPT-5.1: CONSIDER FOR QUALITY**
+                        
+                        - Best for complex scenarios
+                        - Quality improvements may offset cost
+                        - Pilot on critical test cases
+                        - Monitor ROI in pilot phase
+                        """)
+                    elif cost_increase_pct < 200:
+                        st.warning("""
+                        **⚠️ GPT-5.1: HIGH COST**
+                        
+                        - Significant cost increase
+                        - Justify with quality requirements
+                        - Use selectively for critical cases
+                        - Consider phased approach
+                        """)
+                    else:
+                        st.warning("""
+                        **⚠️ GPT-5.1: VERY HIGH COST**
+                        
+                        - Only for mission-critical cases
+                        - Ensure quality gains are essential
+                        - Start with small pilot
+                        - Track metrics carefully
+                        """)
+
+            st.markdown("---")
+
+            # Operations Breakdown
+            if ai_metrics['operations']:
+                st.markdown("#### 🔧 AI Operations Breakdown")
+
+                sorted_ops = sorted(
+                    ai_metrics['operations'].items(),
+                    key=lambda x: x[1],
                     reverse=True
                 )
 
-                for script_file in script_files:
-                    file_path = os.path.join(engine.output_dir, script_file)
-                    file_size = os.path.getsize(file_path)
-                    mod_time = datetime.fromtimestamp(
-                        os.path.getmtime(file_path)
-                    ).strftime('%Y-%m-%d %H:%M:%S')
+                cols = st.columns(min(len(sorted_ops), 4))
+                for idx, (operation, count) in enumerate(sorted_ops):
+                    with cols[idx % 4]:
+                        percentage = (count / ai_metrics['total_ai_calls']) * 100
+                        st.metric(
+                            operation.replace('_', ' ').title(),
+                            count,
+                            delta=f"{percentage:.1f}%"
+                        )
 
-                    with st.expander(f"📄 {script_file}"):
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.markdown(f"**Size:** {file_size} bytes")
-                        with col2:
-                            st.markdown(f"**Modified:** {mod_time}")
-                        with col3:
-                            with open(file_path, 'r') as f:
-                                content = f.read()
-                                st.download_button(
-                                    label="⬇️ Download",
-                                    data=content,
-                                    file_name=script_file,
-                                    mime="text/plain",
-                                    key=f"download_{script_file}"
-                                )
+            # Models Used
+            if ai_metrics['models_used']:
+                st.markdown("---")
+                st.markdown("#### 🧠 AI Models Used")
 
-                        # Show preview
-                        with open(file_path, 'r') as f:
-                            st.code(f.read(), language='robotframework')
-            else:
-                st.info("No scripts generated yet. Start by creating a test case in one of the other tabs.")
+                for model, count in ai_metrics['models_used'].items():
+                    percentage = (count / ai_metrics['total_ai_calls']) * 100
+                    col1, col2 = st.columns([3, 1])
+
+                    with col1:
+                        st.markdown(f"**{model}**")
+                        st.progress(percentage / 100)
+
+                    with col2:
+                        st.metric("", f"{count} ({percentage:.1f}%)")
+
+            # Accuracy and Quality Metrics
+            st.markdown("---")
+            st.markdown("#### ✅ Quality Metrics")
+
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                # Calculate accuracy based on success rate
+                if ai_metrics['success_rate'] >= 95:
+                    quality = "Excellent"
+                    quality_color = "🟢"
+                elif ai_metrics['success_rate'] >= 85:
+                    quality = "Good"
+                    quality_color = "🟡"
+                else:
+                    quality = "Needs Improvement"
+                    quality_color = "🔴"
+
+                st.metric(
+                    "Overall Quality",
+                    f"{quality_color} {quality}",
+                    help=f"Based on {ai_metrics['success_rate']:.1f}% success rate"
+                )
+
+            with col2:
+                # Response time rating
+                if ai_metrics['avg_response_time'] < 2:
+                    speed = "Fast"
+                    speed_color = "🟢"
+                elif ai_metrics['avg_response_time'] < 5:
+                    speed = "Moderate"
+                    speed_color = "🟡"
+                else:
+                    speed = "Slow"
+                    speed_color = "🔴"
+
+                st.metric(
+                    "Response Speed",
+                    f"{speed_color} {speed}",
+                    help=f"Average {ai_metrics['avg_response_time']:.2f}s response time"
+                )
+
+            with col3:
+                # Token efficiency rating
+                if ai_metrics['avg_tokens_per_call'] < 1000:
+                    efficiency = "Efficient"
+                    eff_color = "🟢"
+                elif ai_metrics['avg_tokens_per_call'] < 2000:
+                    efficiency = "Moderate"
+                    eff_color = "🟡"
+                else:
+                    efficiency = "High Usage"
+                    eff_color = "🔴"
+
+                st.metric(
+                    "Token Efficiency",
+                    f"{eff_color} {efficiency}",
+                    help=f"Average {ai_metrics['avg_tokens_per_call']:.0f} tokens/call"
+                )
+
         else:
-            st.info("Output directory not found. Generate your first script to get started.")
+            st.info("🤖 No AI performance data available yet. Use AI-powered features to see metrics here.")
+
+    # Tab 9: Historical Trends
+    with tab9:
+        st.markdown("### 📊 Historical Trends & Patterns")
+        st.markdown("Time-based analysis and trend visualization")
+
+        # Time range selector
+        days_filter_trends = st.selectbox(
+            "Time Range",
+            options=[7, 14, 30, 60, 90],
+            index=3,  # Default to 60 days
+            format_func=lambda x: f"Last {x} days",
+            key="trends_days_filter"
+        )
+
+        with st.spinner("Loading historical data..."):
+            trends = TestPilotAnalytics.get_historical_trends(days=days_filter_trends)
+            stats = TestPilotAnalytics.get_usage_statistics(days=days_filter_trends)
+
+        # Daily Generations Trend
+        if trends['daily_generations']:
+            st.markdown("#### 📈 Script Generation Trends")
+
+            sorted_dates = sorted(trends['daily_generations'].keys())
+            generation_counts = [trends['daily_generations'][date] for date in sorted_dates]
+
+            # Show statistics
+            col1, col2, col3, col4 = st.columns(4)
+
+            with col1:
+                st.metric("Total Days Active", len(sorted_dates))
+
+            with col2:
+                avg_per_day = sum(generation_counts) / len(generation_counts)
+                st.metric("Avg Generations/Day", f"{avg_per_day:.1f}")
+
+            with col3:
+                st.metric("Peak Daily Generations", max(generation_counts))
+
+            with col4:
+                # Calculate trend (simple: compare first half to second half)
+                mid = len(generation_counts) // 2
+                if mid > 0:
+                    first_half_avg = sum(generation_counts[:mid]) / mid
+                    second_half_avg = sum(generation_counts[mid:]) / (len(generation_counts) - mid)
+                    trend_pct = ((second_half_avg - first_half_avg) / max(first_half_avg, 1)) * 100
+                    st.metric("Trend", f"{trend_pct:+.1f}%", help="Growth rate (first half vs second half)")
+
+            # Show daily data in expandable section
+            with st.expander("📅 View Daily Breakdown", expanded=False):
+                # Display in a table-like format
+                for date in sorted_dates[-14:]:  # Show last 14 days
+                    col1, col2 = st.columns([2, 1])
+                    with col1:
+                        st.text(date)
+                    with col2:
+                        count = trends['daily_generations'][date]
+                        st.progress(count / max(generation_counts), text=f"{count} scripts")
+
+        # Daily Users Trend
+        if trends['daily_users']:
+            st.markdown("---")
+            st.markdown("#### 👥 User Activity Trends")
+
+            sorted_dates = sorted(trends['daily_users'].keys())
+            user_counts = [trends['daily_users'][date] for date in sorted_dates]
+
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                avg_users = sum(user_counts) / len(user_counts)
+                st.metric("Avg Daily Users", f"{avg_users:.1f}")
+
+            with col2:
+                st.metric("Peak Daily Users", max(user_counts))
+
+            with col3:
+                st.metric("Total Unique Users", stats['unique_users'])
+
+        # AI Usage Trends
+        if trends['daily_ai_calls']:
+            st.markdown("---")
+            st.markdown("#### 🤖 AI Usage Trends")
+
+            sorted_dates = sorted(trends['daily_ai_calls'].keys())
+            ai_counts = [trends['daily_ai_calls'][date] for date in sorted_dates]
+
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                st.metric("Total AI Calls", sum(ai_counts))
+
+            with col2:
+                avg_calls = sum(ai_counts) / len(ai_counts)
+                st.metric("Avg AI Calls/Day", f"{avg_calls:.1f}")
+
+            with col3:
+                st.metric("Peak Daily AI Calls", max(ai_counts))
+
+            # Token usage trend
+            if trends['daily_tokens']:
+                st.markdown("**Token Consumption Trend**")
+                sorted_token_dates = sorted(trends['daily_tokens'].keys())
+                token_counts = [trends['daily_tokens'][date] for date in sorted_token_dates]
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Total Tokens Used", f"{sum(token_counts):,}")
+                with col2:
+                    avg_tokens = sum(token_counts) / len(token_counts)
+                    st.metric("Avg Tokens/Day", f"{avg_tokens:,.0f}")
+
+        # Module Trends
+        if trends['module_trends']:
+            st.markdown("---")
+            st.markdown("#### 🎯 Feature Usage Over Time")
+
+            for module, daily_data in list(trends['module_trends'].items())[:5]:  # Show top 5 modules
+                with st.expander(f"{module.replace('_', ' ').title()}", expanded=False):
+                    sorted_dates = sorted(daily_data.keys())
+                    counts = [daily_data[date] for date in sorted_dates]
+
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Total Uses", sum(counts))
+                    with col2:
+                        st.metric("Avg Uses/Day", f"{sum(counts)/len(counts):.1f}")
+                    with col3:
+                        st.metric("Peak Uses", max(counts))
+
+        # Weekly Summary
+        if trends['weekly_summary']:
+            st.markdown("---")
+            st.markdown("#### 📅 Weekly Summary")
+
+            sorted_weeks = sorted(trends['weekly_summary'].keys())
+
+            for week in sorted_weeks[-4:]:  # Show last 4 weeks
+                week_data = trends['weekly_summary'][week]
+                with st.expander(f"Week {week}", expanded=False):
+                    generations = week_data.get('generations', 0)
+                    st.metric("Script Generations", generations)
+
+    # Tab 10: ROI Dashboard
+    with tab10:
+        st.markdown("### 💰 ROI & Value Dashboard")
+        st.markdown("Measure business value, time savings, and return on investment")
+
+        # Time range selector
+        days_filter_roi = st.selectbox(
+            "Time Range",
+            options=[7, 14, 30, 60, 90, 180, 365],
+            index=2,
+            format_func=lambda x: f"Last {x} days",
+            key="roi_days_filter"
+        )
+
+        with st.spinner("Calculating ROI metrics..."):
+            roi_metrics = TestPilotAnalytics.get_roi_metrics(days=days_filter_roi)
+            ai_metrics = TestPilotAnalytics.get_ai_performance_metrics(days=days_filter_roi)
+
+        # Top-level ROI Metrics
+        st.markdown("#### 💎 Value Summary")
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            st.metric(
+                "💰 Estimated Cost Savings",
+                f"${roi_metrics['estimated_cost_savings']:,.2f}",
+                help="Based on time saved vs. manual test creation"
+            )
+
+        with col2:
+            st.metric(
+                "⏱️ Time Saved",
+                f"{roi_metrics['time_saved_hours']:.1f} hrs",
+                delta=f"{roi_metrics['time_saved_minutes']:,.0f} minutes",
+                help="Total time saved through automation"
+            )
+
+        with col3:
+            st.metric(
+                "📊 Scripts Generated",
+                roi_metrics['scripts_generated'],
+                help="Successfully generated test scripts"
+            )
+
+        with col4:
+            st.metric(
+                "⚡ Productivity Boost",
+                f"{roi_metrics['productivity_multiplier']:.1f}x",
+                help="Productivity multiplier vs. manual approach"
+            )
+
+        st.markdown("---")
+
+        # Detailed Breakdown
+        st.markdown("#### 📈 Detailed Value Analysis")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown("**⏱️ Time Efficiency**")
+
+            st.metric(
+                "Avg Time per Script",
+                f"{roi_metrics['avg_time_per_script']:.2f}s",
+                help="Average generation time per script"
+            )
+
+            # Calculate time saved per script with validation
+            manual_time_mins = roi_metrics.get('assumptions', {}).get('manual_time_mins', 30)
+            auto_time_mins = roi_metrics['avg_time_per_script'] / 60
+            time_saved_per_script = manual_time_mins - auto_time_mins
+
+            # Display time saved metric with proper formatting
+            if time_saved_per_script >= 0:
+                st.metric(
+                    "Time Saved per Script",
+                    f"{time_saved_per_script:.1f} mins",
+                    help="Time saved per generated script vs. manual"
+                )
+            else:
+                st.metric(
+                    "Time per Script",
+                    f"{abs(time_saved_per_script):.1f} mins over baseline",
+                    delta=f"{time_saved_per_script:.1f} mins",
+                    delta_color="inverse",
+                    help="Generation time exceeds manual baseline (adjust assumptions if needed)"
+                )
+
+            # Efficiency rating with bounds checking
+            efficiency_pct = (time_saved_per_script / manual_time_mins) * 100
+            # Clamp efficiency_pct to valid range [0, 100] for progress bar
+            efficiency_display = max(0, min(100, efficiency_pct))
+
+            if efficiency_pct >= 0:
+                st.progress(efficiency_display / 100, text=f"{efficiency_pct:.1f}% more efficient")
+            else:
+                st.warning(f"⚠️ Generation taking {abs(efficiency_pct):.1f}% longer than manual baseline. Review assumptions.")
+
+        with col2:
+            st.markdown("**💵 Cost Analysis**")
+
+            # AI costs
+            st.metric(
+                "AI Operation Cost",
+                f"${ai_metrics.get('token_cost_estimate', 0):.2f}",
+                help="Cost of AI API calls"
+            )
+
+            # Net savings
+            net_savings = roi_metrics['estimated_cost_savings'] - ai_metrics.get('token_cost_estimate', 0)
+            st.metric(
+                "Net Savings",
+                f"${net_savings:,.2f}",
+                delta=f"After AI costs",
+                help="Total savings minus AI costs"
+            )
+
+            # ROI percentage
+            if ai_metrics.get('token_cost_estimate', 0) > 0:
+                roi_percentage = (net_savings / ai_metrics['token_cost_estimate']) * 100
+                st.metric(
+                    "ROI",
+                    f"{roi_percentage:.0f}%",
+                    help="Return on investment percentage"
+                )
+
+        st.markdown("---")
+
+        # Template Reuse Value
+        st.markdown("#### 📚 Template Reuse Impact")
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.metric(
+                "Templates Created",
+                roi_metrics['templates_created'],
+                help="Total templates saved"
+            )
+
+        with col2:
+            st.metric(
+                "Templates Reused",
+                roi_metrics['templates_reused'],
+                help="Times templates were reused"
+            )
+
+        with col3:
+            st.metric(
+                "Reuse Rate",
+                f"{roi_metrics['template_reuse_rate']:.1f}%",
+                help="Template reuse efficiency"
+            )
+
+        # Template value
+        if roi_metrics['templates_reused'] > 0:
+            # Each template reuse saves significant time
+            template_time_saved_mins = roi_metrics['templates_reused'] * 20  # 20 mins saved per reuse
+            template_value = (template_time_saved_mins / 60) * 50  # $50/hr rate
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric(
+                    "Time Saved via Templates",
+                    f"{template_time_saved_mins} mins",
+                    help="Time saved through template reuse"
+                )
+            with col2:
+                st.metric(
+                    "Template Value",
+                    f"${template_value:.2f}",
+                    help="Monetary value of template reuse"
+                )
+
+        st.markdown("---")
+
+        # Adoption & Usage
+        st.markdown("#### 👥 Adoption Metrics")
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.metric(
+                "Active Users",
+                roi_metrics['unique_users'],
+                help="Number of unique users"
+            )
+
+        with col2:
+            st.metric(
+                "Adoption Level",
+                roi_metrics['adoption_rate'],
+                help="Overall adoption rate"
+            )
+
+        with col3:
+            # Usage per user
+            if roi_metrics['unique_users'] > 0:
+                scripts_per_user = roi_metrics['scripts_generated'] / roi_metrics['unique_users']
+                st.metric(
+                    "Avg Scripts/User",
+                    f"{scripts_per_user:.1f}",
+                    help="Average scripts generated per user"
+                )
+
+        # Recommendations
+        st.markdown("---")
+        st.markdown("#### 💡 Recommendations")
+
+        recommendations = []
+
+        if roi_metrics['template_reuse_rate'] < 50:
+            recommendations.append("🔹 **Increase template reuse**: Current reuse rate is below 50%. Promote template library to users.")
+
+        if roi_metrics['adoption_rate'] == 'Low':
+            recommendations.append("🔹 **Improve adoption**: Current adoption is low. Consider training sessions or documentation.")
+
+        if ai_metrics.get('success_rate', 100) < 90:
+            recommendations.append("🔹 **Improve AI accuracy**: Success rate is below 90%. Review failed generations and optimize prompts.")
+
+        if roi_metrics['scripts_generated'] > 100:
+            recommendations.append("🔹 **Excellent usage**: High script generation volume indicates strong adoption and value delivery.")
+
+        if net_savings > 1000:
+            recommendations.append(f"🔹 **Strong ROI**: Net savings of ${net_savings:,.2f} demonstrates clear business value.")
+
+        if not recommendations:
+            recommendations.append("✅ **All metrics look good**: Continue current usage patterns and monitor trends.")
+
+        for rec in recommendations:
+            st.info(rec)
+
+        # Export Report
+        st.markdown("---")
+        st.markdown("#### 📄 Export ROI Report")
+
+        report_data = {
+            "report_date": datetime.now().isoformat(),
+            "period_days": days_filter_roi,
+            "roi_metrics": roi_metrics,
+            "ai_metrics": {
+                "total_calls": ai_metrics.get('total_ai_calls', 0),
+                "success_rate": ai_metrics.get('success_rate', 0),
+                "total_tokens": ai_metrics.get('total_tokens', 0),
+                "cost_estimate": ai_metrics.get('token_cost_estimate', 0)
+            },
+            "net_savings": net_savings,
+            "recommendations": recommendations
+        }
+
+        report_json = json.dumps(report_data, indent=2)
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.download_button(
+                label="📥 Download JSON Report",
+                data=report_json,
+                file_name=f"testpilot_roi_report_{datetime.now().strftime('%Y%m%d')}.json",
+                mime="application/json",
+                use_container_width=True
+            )
 
 
 # Main entry point

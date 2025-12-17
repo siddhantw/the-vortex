@@ -1,0 +1,175 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Enhanced Performance Dashboard</title>
+    <link rel="stylesheet" href="css/dashboard.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="dashboard-container">
+        <!-- Header -->
+        <div class="dashboard-header">
+            <h1>Enhanced Performance Dashboard</h1>
+            <p>Comprehensive website performance monitoring and analysis</p>
+            <div style="margin-top: 15px; font-size: 0.9rem; opacity: 0.8;">
+                Last updated: <span id="last-updated"></span>
+            </div>
+        </div>
+
+        <!-- Summary Statistics -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <h3>Total Sites Monitored</h3>
+                <div class="stat-value" id="total-sites">-</div>
+                <div class="stat-change positive">
+                    <span>↗</span> Active monitoring
+                </div>
+            </div>
+            <div class="stat-card">
+                <h3>Total Performance Tests</h3>
+                <div class="stat-value" id="total-tests">-</div>
+                <div class="stat-change positive">
+                    <span>↗</span> Historical data
+                </div>
+            </div>
+            <div class="stat-card">
+                <h3>Avg Performance Score</h3>
+                <div class="stat-value" id="avg-performance">-</div>
+                <div class="stat-change">
+                    <span>📊</span> Overall health
+                </div>
+            </div>
+            <div class="stat-card">
+                <h3>Avg Core Web Vitals</h3>
+                <div class="stat-value" id="avg-cwv">-</div>
+                <div class="stat-change">
+                    <span>⚡</span> User experience
+                </div>
+            </div>
+        </div>
+
+        <!-- Performance Trends -->
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">Performance Trends</h2>
+            </div>
+            <div class="chart-container">
+                <img src="charts/performance_trend.png" alt="Performance Trend Chart" style="max-width: 100%;">
+            </div>
+        </div>
+
+        <!-- Core Web Vitals Trends -->
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">Core Web Vitals Trends</h2>
+            </div>
+            <div class="chart-container">
+                <img src="charts/cwv_trend.png" alt="Core Web Vitals Trend Chart" style="max-width: 100%;">
+            </div>
+        </div>
+
+        <!-- Grade Distribution -->
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">Performance Grade Distribution</h2>
+            </div>
+            <div class="chart-container">
+                <img src="charts/grade_distribution.png" alt="Grade Distribution Chart" style="max-width: 100%;">
+            </div>
+        </div>
+
+        <!-- Performance Matrix -->
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">Performance Matrix</h2>
+            </div>
+            <div class="chart-container">
+                <img src="charts/performance_matrix.png" alt="Performance Matrix Chart" style="max-width: 100%;">
+            </div>
+        </div>
+
+        <!-- Speed Index Visualization -->
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">Speed Index Distribution</h2>
+            </div>
+            <div class="chart-container">
+                <img src="charts/speed_index.png" alt="Speed Index Chart" style="max-width: 100%;">
+            </div>
+        </div>
+
+        <!-- Performance Insights -->
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">Performance Insights & Recommendations</h2>
+            </div>
+            <div class="insights-container" id="insights-container">
+                <!-- Insights will be loaded dynamically -->
+            </div>
+        </div>
+
+        <!-- Sites Overview Table -->
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">Sites Overview</h2>
+            </div>
+            <div style="overflow-x: auto;">
+                <table class="sites-table">
+                    <thead>
+                        <tr>
+                            <th>Site</th>
+                            <th>CWV Grade</th>
+                            <th>CWV Score</th>
+                            <th>Performance</th>
+                            <th>LCP</th>
+                            <th>FCP</th>
+                            <th>CLS</th>
+                            <th>INP</th>
+                            <th>Tests</th>
+                            <th>Trend</th>
+                        </tr>
+                    </thead>
+                    <tbody id="sites-table-body">
+                        <!-- Site data will be loaded dynamically -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Recent Tests -->
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">Recent Tests</h2>
+            </div>
+            <div id="recent-tests">
+                <!-- Recent tests will be loaded dynamically -->
+            </div>
+        </div>
+
+        <!-- Historical Reports -->
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">Historical Reports</h2>
+            </div>
+            <div id="historical-reports">
+                <p>Historical performance reports will be available here...</p>
+            </div>
+        </div>
+    </div>
+
+    <div class="footer">
+        <p>Enhanced Performance Dashboard &copy; 2025</p>
+        <p>Comprehensive website performance monitoring and analysis</p>
+    </div>
+
+    <script src="js/dashboard.js"></script>
+    <script>
+        // Set last updated time
+        document.getElementById('last-updated').textContent = new Date().toLocaleString();
+    </script>
+</body>
+</html>
+        

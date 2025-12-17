@@ -1,0 +1,7 @@
+timestamp,baseline,comparison,match_percentage,status,diff_regions,execution_time,error_message,ai_confidence,regression_probability,criticality
+2025-07-29 17:13:41,1.png,2.png,1.3004557291666714,FAIL,1,0.055359,,,,
+2025-07-29 17:14:16,2.png,2.png,100.0,PASS,0,0.046137,,,,
+2025-08-05 20:29:06,1.png,2.png,1.3004557291666714,FAIL,1,0.047198,,,,
+2025-08-27 03:34:35,1.png,2.png,1.3004557291666714,FAIL,1,0.050916,,0.0,0.0,Unknown
+2025-08-27 03:34:56,2.png,2.png,100.0,PASS,0,0.035156,,0.0,0.0,Unknown
+2025-08-27 03:35:02,2.png,2.png,100.0,PASS,0,0.034653,,0.0,0.0,Unknown

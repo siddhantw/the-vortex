@@ -43,11 +43,14 @@ pytesseract
 pytest-axe
 python-docx
 python-pptx
+reportlab
 requests
 robotframework
+robotframework-dashboard
 robotframework-databaselibrary
 robotframework-dependencylibrary
 robotframework-extendedselenium2library
+robotframework-heal
 robotframework-jsonlibrary
 robotframework-lint
 robotframework-mcp
@@ -57,6 +60,7 @@ robotframework-requests
 robotframework-robocop
 robotframework-selenium2library==3.0.0
 robotframework-seleniumlibrary
+robotframework-selfhealing-agents
 robotframework-tidy
 scikit-image
 seaborn
