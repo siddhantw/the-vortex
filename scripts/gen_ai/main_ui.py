@@ -1289,6 +1289,460 @@ if 'pending_history_module' in st.session_state and st.session_state.pending_his
     if module_to_save != st.session_state.last_saved_module:
         save_usage_history(module_to_save)
 
+# ============================================================================
+# 🚀 ROBOTMCP GLOBAL INITIALIZATION (Available to all modules)
+# ============================================================================
+# Initialize RobotMCP connection when The Vortex loads so all modules can use it
+if 'robotmcp_global_init' not in st.session_state:
+    st.session_state.robotmcp_global_init = False
+
+if not st.session_state.robotmcp_global_init:
+    try:
+        # Import RobotMCP initialization from test_pilot
+        from gen_ai.use_cases.test_pilot import (
+            ROBOTMCP_AVAILABLE,
+            start_robotmcp_background_connection,
+            _robotmcp_connection_pool
+        )
+
+        if ROBOTMCP_AVAILABLE:
+            # Start connection in background (non-blocking)
+            start_robotmcp_background_connection()
+            st.session_state.robotmcp_global_init = True
+    except ImportError:
+        # RobotMCP not available - silently continue
+        st.session_state.robotmcp_global_init = True  # Don't retry on every rerun
+        pass
+    except Exception as e:
+        # Any other error - log and continue
+        st.session_state.robotmcp_global_init = True  # Don't retry on every rerun
+        import logging
+        logging.debug(f"RobotMCP initialization skipped: {e}")
+        pass
+
+# ============================================================================
+# 🤖 ROBOTMCP STATUS DISPLAY (Always visible in sidebar)
+# ============================================================================
+# Show RobotMCP status in sidebar for all modules to see
+try:
+    from gen_ai.use_cases.test_pilot import (
+        ROBOTMCP_AVAILABLE,
+        _robotmcp_connection_pool,
+        start_robotmcp_background_connection,
+        get_robotmcp_helper
+    )
+
+    if ROBOTMCP_AVAILABLE:
+        with st.sidebar:
+            st.markdown("---")
+
+            # Header with manual refresh button
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                st.markdown("### 🤖 RobotMCP Status")
+            with col2:
+                if st.button("🔄", key="refresh_robotmcp_global", help="Refresh status and reconnect if needed", use_container_width=True):
+                    # Check connection status and reinitialize if disconnected
+                    import logging
+                    import time
+                    current_status = _robotmcp_connection_pool.get('connection_status', 'disconnected')
+                    current_helper = _robotmcp_connection_pool.get('helper')
+                    bg_task = _robotmcp_connection_pool.get('background_task')
+
+                    # Determine if reconnection is needed
+                    need_reconnect = False
+
+                    # Handle 'connecting' state - wait for connection to complete
+                    if current_status == 'connecting':
+                        logging.info("🔄 Refresh: Connection in progress, waiting for completion...")
+
+                        # Wait up to 10 seconds for connection to complete
+                        max_wait = 10
+                        waited = 0
+                        while waited < max_wait and current_status == 'connecting':
+                            time.sleep(0.5)
+                            waited += 0.5
+                            current_status = _robotmcp_connection_pool.get('connection_status', 'disconnected')
+                            current_helper = _robotmcp_connection_pool.get('helper')
+
+                        # Check final status after waiting
+                        if current_status == 'connected':
+                            logging.info("✅ Refresh: Connection completed successfully")
+                        elif current_status == 'connecting':
+                            # Still connecting after timeout - check if thread is alive
+                            thread_alive = bg_task.is_alive() if bg_task else False
+                            if thread_alive:
+                                logging.info("⏳ Refresh: Connection still in progress (thread alive)")
+                            else:
+                                logging.warning("⚠️ Refresh: Connection timeout - thread dead, will re-attempt")
+                                need_reconnect = True
+                        else:
+                            # Connection failed
+                            logging.warning(f"⚠️ Refresh: Connection failed (status: {current_status}), will re-attempt")
+                            need_reconnect = True
+
+                    elif current_status in ['disconnected', 'error']:
+                        # Status indicates problem - check helper state
+                        if current_helper and hasattr(current_helper, 'is_connected'):
+                            try:
+                                if not current_helper.is_connected:
+                                    need_reconnect = True
+                                    logging.warning("🔄 Refresh: Helper exists but not connected - will reconnect")
+                                else:
+                                    logging.info("✅ Refresh: Helper is connected, auto-correcting status")
+                                    _robotmcp_connection_pool['connection_status'] = 'connected'
+                            except:
+                                need_reconnect = True
+                                logging.warning("🔄 Refresh: Error checking helper - will reconnect")
+                        else:
+                            need_reconnect = True
+                            logging.warning("🔄 Refresh: No helper or status disconnected - will reconnect")
+
+                    elif current_status == 'connected':
+                        # Already connected - just verify
+                        if current_helper and hasattr(current_helper, 'is_connected'):
+                            try:
+                                if not current_helper.is_connected:
+                                    logging.warning("⚠️ Refresh: Status 'connected' but helper not connected - will reconnect")
+                                    need_reconnect = True
+                                else:
+                                    logging.info("✅ Refresh: Connection verified as healthy")
+                            except:
+                                logging.warning("⚠️ Refresh: Error verifying connection - will reconnect")
+                                need_reconnect = True
+                        else:
+                            logging.warning("⚠️ Refresh: Status 'connected' but no helper - will reconnect")
+                            need_reconnect = True
+
+                    # Trigger reconnection if needed
+                    if need_reconnect:
+                        logging.info("🔄 Refresh button: Reinitializing MCP server connection")
+                        try:
+                            # Reset state
+                            st.session_state.robotmcp_prewarming_started = False
+                            # Start new connection
+                            start_robotmcp_background_connection()
+                            st.session_state.robotmcp_prewarming_started = True
+                            _robotmcp_connection_pool['connection_status'] = 'connecting'
+                            logging.info("✅ Refresh: Reconnection initiated successfully")
+                        except Exception as e:
+                            logging.error(f"❌ Refresh: Reconnection failed: {e}")
+                            _robotmcp_connection_pool['connection_status'] = 'error'
+
+                    # Rerun to show updated status
+                    st.rerun()
+
+            status = _robotmcp_connection_pool.get('connection_status', 'disconnected')
+            helper = _robotmcp_connection_pool.get('helper')  # Get directly from pool
+
+            # ============================================================
+            # AUTO-RECONNECTION LOGIC - Keep connection alive
+            # ============================================================
+            actual_connected = False
+            needs_reconnection = False
+
+            if helper is not None:
+                try:
+                    actual_connected = helper.is_connected
+                    # Auto-correct status if needed
+                    if actual_connected and status in ['error', 'disconnected']:
+                        _robotmcp_connection_pool['connection_status'] = 'connected'
+                        status = 'connected'
+                        import logging
+                        logging.info("✅ Auto-corrected status to 'connected' (helper is connected)")
+                    # If helper says disconnected but status says connected, mark for reconnection
+                    elif not actual_connected and status == 'connected':
+                        needs_reconnection = True
+                        _robotmcp_connection_pool['connection_status'] = 'error'
+                        status = 'error'
+                        import logging
+                        logging.warning("⚠️ Helper disconnected but status was 'connected' - will reconnect")
+                except:
+                    # Error checking connection - assume disconnected
+                    if status == 'connected':
+                        needs_reconnection = True
+                        _robotmcp_connection_pool['connection_status'] = 'error'
+                        status = 'error'
+                        import logging
+                        logging.warning("⚠️ Error checking helper connection - will reconnect")
+            else:
+                # Helper is None - check if status was 'connected' before marking as disconnected
+                # This prevents false disconnections when helper is still being created
+                if status == 'connected':
+                    import logging
+                    logging.warning("⚠️ Helper is None but status was 'connected' - may be loading, will check again")
+                    # Don't immediately mark as disconnected - give it a chance
+                    # Only mark for reconnection if it stays None
+                    pass  # Status stays 'connected', will be checked next refresh
+
+            # Check if background task died but connection isn't established
+            bg_task = _robotmcp_connection_pool.get('background_task')
+            if bg_task is not None:
+                try:
+                    if not bg_task.is_alive() and status in ['connecting', 'disconnected'] and not actual_connected:
+                        needs_reconnection = True
+                except:
+                    pass
+
+            # AUTO-RECONNECT if needed
+            if needs_reconnection:
+                import logging
+                logging.info("🔄 Auto-reconnecting RobotMCP (connection lost)")
+                try:
+                    # Reset state
+                    st.session_state.robotmcp_prewarming_started = False
+                    # Start new connection
+                    start_robotmcp_background_connection()
+                    st.session_state.robotmcp_prewarming_started = True
+                    _robotmcp_connection_pool['connection_status'] = 'connecting'
+                    status = 'connecting'
+                except Exception as e:
+                    logging.error(f"Auto-reconnection failed: {e}")
+                    _robotmcp_connection_pool['connection_status'] = 'error'
+                    status = 'error'
+
+            # ============================================================
+            # PERIODIC HEALTH CHECK - Proactive monitoring
+            # ============================================================
+            # Check connection health every 60 seconds (reduced frequency to avoid overhead)
+            import time
+            if 'robotmcp_last_health_check' not in st.session_state:
+                st.session_state.robotmcp_last_health_check = time.time()
+
+            time_since_check = time.time() - st.session_state.robotmcp_last_health_check
+
+            # Perform health check every 60 seconds (less aggressive)
+            if time_since_check >= 60 and status == 'connected' and actual_connected:
+                st.session_state.robotmcp_last_health_check = time.time()
+                # Update last health check in pool
+                import datetime
+                _robotmcp_connection_pool['last_health_check'] = datetime.datetime.now()
+
+                # Verify connection is still alive with retry logic
+                try:
+                    if helper and hasattr(helper, 'session') and helper.session:
+                        # Try a lightweight check with longer timeout and retry
+                        import asyncio
+                        import logging
+
+                        # Try to use existing event loop if available, otherwise create new one
+                        try:
+                            loop = asyncio.get_event_loop()
+                            if loop.is_closed():
+                                loop = asyncio.new_event_loop()
+                                asyncio.set_event_loop(loop)
+                                loop_created = True
+                            else:
+                                loop_created = False
+                        except RuntimeError:
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            loop_created = True
+
+                        health_check_passed = False
+                        try:
+                            # Try health check with 15 second timeout (3x more resilient)
+                            max_retries = 2
+                            for attempt in range(max_retries):
+                                try:
+                                    loop.run_until_complete(
+                                        asyncio.wait_for(helper.session.list_tools(), timeout=15.0)
+                                    )
+                                    health_check_passed = True
+                                    break  # Success!
+                                except asyncio.TimeoutError:
+                                    if attempt < max_retries - 1:
+                                        logging.debug(f"Health check timeout, retry {attempt + 1}/{max_retries}")
+                                        import time
+                                        time.sleep(1.0)  # Wait before retry
+                                    else:
+                                        raise  # Last attempt failed
+                                except RuntimeError as e:
+                                    if "Event loop is closed" in str(e):
+                                        logging.warning("Event loop closed - will reconnect")
+                                        needs_reconnection = True
+                                        _robotmcp_connection_pool['connection_status'] = 'error'
+                                        status = 'error'
+                                        break
+                                    else:
+                                        raise
+
+                            if not health_check_passed and not needs_reconnection:
+                                # Health check failed after retries
+                                # But check if helper claims to be connected before reconnecting
+                                if helper and hasattr(helper, 'is_connected'):
+                                    try:
+                                        still_connected = helper.is_connected
+                                        if still_connected:
+                                            # Helper says it's connected even though health check failed
+                                            # This might be an event loop issue, not a real disconnection
+                                            logging.warning("Health check failed but helper.is_connected=True - may be event loop issue")
+                                            # Don't reconnect yet, just log
+                                            pass
+                                        else:
+                                            # Helper is genuinely disconnected
+                                            logging.warning("Health check failed after retries - will reconnect")
+                                            needs_reconnection = True
+                                            _robotmcp_connection_pool['connection_status'] = 'error'
+                                            status = 'error'
+                                    except:
+                                        # Error checking - assume need reconnection
+                                        logging.warning("Health check failed and can't verify helper state - will reconnect")
+                                        needs_reconnection = True
+                                        _robotmcp_connection_pool['connection_status'] = 'error'
+                                        status = 'error'
+                                else:
+                                    # No helper - definitely need reconnection
+                                    logging.warning("Health check failed after retries - will reconnect")
+                                    needs_reconnection = True
+                                    _robotmcp_connection_pool['connection_status'] = 'error'
+                                    status = 'error'
+                        except asyncio.TimeoutError:
+                            # Health check timed out after retries - mark for reconnection
+                            logging.warning("Health check timeout after retries - will reconnect")
+                            needs_reconnection = True
+                            _robotmcp_connection_pool['connection_status'] = 'error'
+                            status = 'error'
+                        except Exception as e:
+                            # Health check failed - check if it's event loop issue
+                            if "Event loop is closed" in str(e) or "RuntimeError" in str(type(e).__name__):
+                                logging.warning(f"Event loop issue: {e} - will reconnect")
+                                needs_reconnection = True
+                                _robotmcp_connection_pool['connection_status'] = 'error'
+                                status = 'error'
+                            else:
+                                # Other error - log and continue (might be temporary)
+                                logging.warning(f"Health check failed: {e} - will retry next check")
+                                # Don't immediately reconnect - give it another chance
+                        finally:
+                            # Only close loop if we created it
+                            if loop_created and loop and not loop.is_closed():
+                                try:
+                                    loop.close()
+                                except:
+                                    pass
+                except:
+                    pass
+
+            # Display status
+            if status == 'connecting':
+                st.info("Connecting...", icon="🔄")
+                if needs_reconnection:
+                    st.caption("⚡ Auto-reconnecting...")
+                else:
+                    st.caption("Establishing connection...")
+            elif status == 'connected':
+                st.success("Connected & Ready", icon="✅")
+                st.caption("✓ Available to all modules • Auto-monitoring active")
+            elif status == 'error':
+                st.warning("Connection Issue", icon="⚠️")
+                st.caption("Auto-reconnecting in background...")
+                # Manual reconnect button
+                if st.button("🔄 Reconnect Now", key="manual_reconnect_robotmcp", use_container_width=True):
+                    st.session_state.robotmcp_prewarming_started = False
+                    _robotmcp_connection_pool['connection_status'] = 'disconnected'
+                    st.rerun()
+            else:
+                st.info("Initializing...", icon="⏳")
+                st.caption("Starting in background...")
+
+            # Comprehensive Debug Info
+            with st.expander("🔍 Debug Info", expanded=True):
+                # Connection Pool Status
+                st.markdown("**📊 Connection Pool**")
+                st.caption(f"• Status: `{status}`")
+                st.caption(f"• Helper Instance: `{helper is not None}`")
+                st.caption(f"• Helper Connected: `{actual_connected}`")
+
+                # Helper Details
+                if helper is not None:
+                    st.caption(f"• Helper Type: `{type(helper).__name__}`")
+                    try:
+                        if hasattr(helper, 'session'):
+                            st.caption(f"• MCP Session: `{helper.session is not None}`")
+                        if hasattr(helper, 'current_session_id'):
+                            st.caption(f"• Session ID: `{helper.current_session_id}`")
+                    except:
+                        pass
+
+                st.markdown("---")
+
+                # Background Task Status
+                st.markdown("**🔄 Background Task**")
+                bg_task = _robotmcp_connection_pool.get('background_task')
+                if bg_task is not None:
+                    try:
+                        is_alive = bg_task.is_alive()
+                        st.caption(f"• Thread Exists: `True`")
+                        st.caption(f"• Thread Alive: `{is_alive}`")
+                        if hasattr(bg_task, 'name'):
+                            st.caption(f"• Thread Name: `{bg_task.name}`")
+                    except Exception as e:
+                        st.caption(f"• Thread Status: `Error - {str(e)[:50]}`")
+                else:
+                    st.caption(f"• Thread Exists: `False`")
+
+                st.markdown("---")
+
+                # Health Check & Timestamps
+                st.markdown("**⏱️ Timestamps & Health**")
+                last_check = _robotmcp_connection_pool.get('last_health_check')
+                if last_check:
+                    try:
+                        import datetime as dt
+                        if isinstance(last_check, dt.datetime):
+                            time_ago = (dt.datetime.now() - last_check).total_seconds()
+                            st.caption(f"• Last Health Check: `{int(time_ago)}s ago`")
+                            st.caption(f"• Timestamp: `{last_check.strftime('%H:%M:%S')}`")
+                        else:
+                            st.caption(f"• Last Health Check: `{last_check}`")
+                    except:
+                        st.caption(f"• Last Health Check: `Unknown`")
+                else:
+                    st.caption(f"• Last Health Check: `Never`")
+
+                # Next health check countdown
+                if 'robotmcp_last_health_check' in st.session_state:
+                    import time
+                    time_since_check = time.time() - st.session_state.robotmcp_last_health_check
+                    next_check_in = max(0, 60 - int(time_since_check))  # Updated to 60s interval
+                    st.caption(f"• Next Health Check: `{next_check_in}s`")
+
+                # Auto-reconnection status
+                st.caption(f"• Auto-Reconnect: `{'Active' if needs_reconnection else 'Standby'}`")
+                st.caption(f"• Health Check: `Every 60s with 15s timeout + 2 retries`")
+                st.caption(f"• Keep-Alive: `Active (prevents session timeout)`")
+
+                st.markdown("---")
+
+                # Session State
+                st.markdown("**💾 Session State**")
+                st.caption(f"• Global Init: `{st.session_state.get('robotmcp_global_init', False)}`")
+                st.caption(f"• Pre-warming Started: `{st.session_state.get('robotmcp_prewarming_started', False)}`")
+
+                st.markdown("---")
+
+                # Connection Lock
+                st.markdown("**🔒 Connection Lock**")
+                conn_lock = _robotmcp_connection_pool.get('connection_lock')
+                st.caption(f"• Lock Exists: `{conn_lock is not None}`")
+                if conn_lock is not None:
+                    st.caption(f"• Lock Type: `{type(conn_lock).__name__}`")
+
+                st.markdown("---")
+
+                # Raw Pool Data
+                st.markdown("**📦 Raw Connection Pool**")
+                pool_keys = list(_robotmcp_connection_pool.keys())
+                st.caption(f"• Keys: `{', '.join(pool_keys)}`")
+                st.caption(f"• Total Entries: `{len(pool_keys)}`")
+except ImportError:
+    # RobotMCP not available - skip status display
+    pass
+except Exception as e:
+    # Any error - skip status display
+    pass
+
 
 # Function to handle feedback submission
 def submit_feedback(rating, comments):
