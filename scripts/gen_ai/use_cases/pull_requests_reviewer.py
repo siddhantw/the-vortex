@@ -33,9 +33,15 @@ except (ImportError, ValueError) as e:
     azure_openai_client = None
     print(f"Warning: Azure OpenAI client not available: {e}")
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Enhanced logging setup
+try:
+    from enhanced_logging import get_logger, EmojiIndicators, PerformanceTimer, ProgressTracker
+    logger = get_logger("PullRequestReviewer", level=logging.INFO, log_file="pull_requests_reviewer.log")
+except ImportError:
+    # Fallback to standard logging if enhanced_logging is not available
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+    print("Warning: Enhanced logging not available, using standard logging")
 
 
 class PullRequestReviewer:

@@ -1,4 +1,4 @@
-# Browser Agent use case for agentic AI-driven web navigation
+ # Browser Agent use case for agentic AI-driven web navigation
 # Leverages Azure OpenAI for planning and DOMSnapshotService for smart traversal
 
 # Ensure streamlit/asyncio compatibility first
@@ -70,8 +70,16 @@ except Exception:
     except Exception:
         ROBOT_WRITER_AVAILABLE = False
 
-logger = logging.getLogger("browser_agent")
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Configure logging with enhanced features
+try:
+    from enhanced_logging import get_logger, EmojiIndicators, PerformanceTimer, ProgressTracker
+    logger = get_logger("BrowserAgent", level=logging.INFO, log_file="browser_agent.log")
+    ENHANCED_LOGGING = True
+except ImportError:
+    logger = logging.getLogger("browser_agent")
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    ENHANCED_LOGGING = False
+
 
 
 @dataclass

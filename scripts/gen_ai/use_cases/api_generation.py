@@ -57,9 +57,15 @@ except ImportError:
             pass
     notifications = MockNotifications()
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Enhanced logging setup
+try:
+    from enhanced_logging import get_logger, EmojiIndicators, PerformanceTimer, ProgressTracker
+    logger = get_logger("APIGeneration", level=logging.INFO, log_file="api_generation.log")
+except ImportError:
+    # Fallback to standard logging if enhanced_logging is not available
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+    print("Warning: Enhanced logging not available, using standard logging")
 
 # Global variable to hold the mock server instance
 mock_server_instance = None

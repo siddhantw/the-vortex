@@ -1,0 +1,507 @@
+{
+  "users": [
+    {
+      "user_id": "a6985563ed26ea48e5eb7807f1597fba",
+      "username": "admin",
+      "email": "admin@newfold.com",
+      "password_hash": "rZG4xz0Q04enzI1j9hVv3LOGZRU6huS45Y6lf+3+N3s=",
+      "salt": "27244fae1b31e3c1e8b9733f746fd3a3256c08dc7ef3730272853c9568cf8370",
+      "roles": [
+        "super_admin"
+      ],
+      "custom_permissions": [],
+      "custom_module_access": [],
+      "full_name": "System Administrator",
+      "department": "",
+      "groups": [],
+      "is_active": true,
+      "is_locked": false,
+      "locked_until": null,
+      "must_change_password": false,
+      "failed_login_attempts": 0,
+      "last_login": "2026-01-09T14:36:35.467283",
+      "last_password_change": "2026-01-07T21:10:12.735395",
+      "password_history": [
+        "CGQJmvjB41AnmlS1iL1Z/kItpDNc3H/jVjyX8dvXPwU=",
+        "rZG4xz0Q04enzI1j9hVv3LOGZRU6huS45Y6lf+3+N3s="
+      ],
+      "mfa_enabled": true,
+      "mfa_secret": "4d6e3ced7aa47864e00a339e6886f172",
+      "active_sessions": [
+        "CM7TdLFYfdwK3yMkAhemqNWxvCTuTaIbhv1Ty6jnnFg"
+      ],
+      "daily_execution_count": 0,
+      "last_execution_reset": null,
+      "total_executions": 0,
+      "created_at": "2026-01-07T21:09:19.083198",
+      "created_by": "system",
+      "modified_at": null,
+      "modified_by": null,
+      "last_accessed": "2026-01-09T14:36:35.467304",
+      "terms_accepted": false,
+      "terms_accepted_at": null,
+      "data_usage_consent": false
+    },
+    {
+      "user_id": "052d9cc979f28b937fb021971e6de7e5",
+      "username": "siddhantwadhwani",
+      "email": "siddhant.wadhwani@newfold.com",
+      "password_hash": "1Vi3AvV28BQt11sGlR8tFh4qO733MrUEpm2pZEugbRI=",
+      "salt": "fc567578c632342cf4549f0974e2e90d690f30f021091a39e68860918a5661b5",
+      "roles": [
+        "super_admin",
+        "admin"
+      ],
+      "custom_permissions": [],
+      "custom_module_access": [],
+      "full_name": "Siddhant Wadhwani",
+      "department": "SDET",
+      "groups": [
+        "test-engineering"
+      ],
+      "is_active": true,
+      "is_locked": false,
+      "locked_until": null,
+      "must_change_password": false,
+      "failed_login_attempts": 0,
+      "last_login": "2026-01-09T19:36:30.954106",
+      "last_password_change": "2026-01-08T01:20:30.422945",
+      "password_history": [
+        "1goBDO1fCOJyWB3oggU/3aBmZC72kJXBdy05tx7+Ae4=",
+        "1Vi3AvV28BQt11sGlR8tFh4qO733MrUEpm2pZEugbRI="
+      ],
+      "mfa_enabled": true,
+      "mfa_secret": "e5b8212581693060bac579dd8e3ba899",
+      "active_sessions": [
+        "rBCiS-n44t0ES2m-dbM43X_RPJri4GEDP7vSadElmm8",
+        "idoRx0sl-q7-dUZQ-irNE1h_ftS4wxBf988S4H8eiFQ",
+        "xB65BrnTCDDgXYqNQnXKJVn0JTUWxCT3QbtT3wRWf3U",
+        "LZWwt2C240VwZBZcn7JpRX_4YQbDpyq4JeEVHrpKpgI",
+        "LIPhL7nAipN4TIaMUcFBCRUQ1xUwEelNDJcHpMcdjGs",
+        "ZjhpSftyUCnnqS7FNEt2sk4r6acpSHhIxNszWSY24mc"
+      ],
+      "daily_execution_count": 0,
+      "last_execution_reset": null,
+      "total_executions": 0,
+      "created_at": "2026-01-08T00:30:54.974101",
+      "created_by": "admin",
+      "modified_at": null,
+      "modified_by": null,
+      "last_accessed": "2026-01-09T19:36:30.954113",
+      "terms_accepted": false,
+      "terms_accepted_at": null,
+      "data_usage_consent": false
+    },
+    {
+      "user_id": "a0ed6ebedb6ade0004b245d9c7ac4072",
+      "username": "mihirshah",
+      "email": "mihir.shah@newfold.com",
+      "password_hash": "rz6YqP9LF3lUkHmW2gjk4E3rT0y1MsCr63fP9nDjlFE=",
+      "salt": "a60aebaecc08b36b8702f212afea5f9b46e9d95d7d353ed78f20bc23a229b75c",
+      "roles": [
+        "qa_engineer"
+      ],
+      "custom_permissions": [],
+      "custom_module_access": [],
+      "full_name": "Mihir Shah",
+      "department": "SDET",
+      "groups": [
+        "test-engineering"
+      ],
+      "is_active": true,
+      "is_locked": false,
+      "locked_until": null,
+      "must_change_password": true,
+      "failed_login_attempts": 0,
+      "last_login": null,
+      "last_password_change": null,
+      "password_history": [
+        "rz6YqP9LF3lUkHmW2gjk4E3rT0y1MsCr63fP9nDjlFE="
+      ],
+      "mfa_enabled": false,
+      "mfa_secret": null,
+      "active_sessions": [],
+      "daily_execution_count": 0,
+      "last_execution_reset": null,
+      "total_executions": 0,
+      "created_at": "2026-01-08T00:32:12.780814",
+      "created_by": "admin",
+      "modified_at": null,
+      "modified_by": null,
+      "last_accessed": null,
+      "terms_accepted": false,
+      "terms_accepted_at": null,
+      "data_usage_consent": false
+    },
+    {
+      "user_id": "27939c9074fa5917aa1971536c08a484",
+      "username": "gastonmarengo",
+      "email": "gaston.marengo@newfold.com",
+      "password_hash": "j8gbchdMCH0K/i8EFXD8S+Ky63SVVwxIBb6DYckRWVI=",
+      "salt": "27eee9c76c2dd51b5b7f0e77d45274bb605435af89f071b7906f87372600ab99",
+      "roles": [
+        "admin"
+      ],
+      "custom_permissions": [],
+      "custom_module_access": [],
+      "full_name": "Gaston Marengo",
+      "department": "SDET",
+      "groups": [
+        "test-engineering"
+      ],
+      "is_active": true,
+      "is_locked": false,
+      "locked_until": null,
+      "must_change_password": true,
+      "failed_login_attempts": 0,
+      "last_login": null,
+      "last_password_change": null,
+      "password_history": [
+        "j8gbchdMCH0K/i8EFXD8S+Ky63SVVwxIBb6DYckRWVI="
+      ],
+      "mfa_enabled": true,
+      "mfa_secret": "a6b275926b47950d1b2d4dfb6c12c938",
+      "active_sessions": [],
+      "daily_execution_count": 0,
+      "last_execution_reset": null,
+      "total_executions": 0,
+      "created_at": "2026-01-08T00:33:16.396091",
+      "created_by": "admin",
+      "modified_at": null,
+      "modified_by": null,
+      "last_accessed": null,
+      "terms_accepted": false,
+      "terms_accepted_at": null,
+      "data_usage_consent": false
+    },
+    {
+      "user_id": "0025f625121d7b70fdc837266cc1da0f",
+      "username": "joseskripczuk",
+      "email": "jose.skripczuk@newfold.com",
+      "password_hash": "L0aCN5v9JF6t69lNYZn0DkNvNfZDXjKL9J7VHShoFJs=",
+      "salt": "f9c7d5ca16ea431a3afdcecdad304e6bb11bacc186f4cace82e6b4819b8dd887",
+      "roles": [
+        "qa_engineer"
+      ],
+      "custom_permissions": [],
+      "custom_module_access": [],
+      "full_name": "Jose Skripczuk",
+      "department": "SDET",
+      "groups": [
+        "test-engineering"
+      ],
+      "is_active": true,
+      "is_locked": false,
+      "locked_until": null,
+      "must_change_password": true,
+      "failed_login_attempts": 0,
+      "last_login": null,
+      "last_password_change": null,
+      "password_history": [
+        "L0aCN5v9JF6t69lNYZn0DkNvNfZDXjKL9J7VHShoFJs="
+      ],
+      "mfa_enabled": false,
+      "mfa_secret": null,
+      "active_sessions": [],
+      "daily_execution_count": 0,
+      "last_execution_reset": null,
+      "total_executions": 0,
+      "created_at": "2026-01-08T00:34:09.142908",
+      "created_by": "admin",
+      "modified_at": null,
+      "modified_by": null,
+      "last_accessed": null,
+      "terms_accepted": false,
+      "terms_accepted_at": null,
+      "data_usage_consent": false
+    },
+    {
+      "user_id": "e4f15e6abe4bc1ba35dde41a9230ba2c",
+      "username": "ignaciosolinas",
+      "email": "ignacio.solinas@newfold.com",
+      "password_hash": "rx44g5whzFbT9RCEoMv0Em3E9lr/Hbv1M9ai5/vSjeE=",
+      "salt": "47d3a85ca2959c4a113d2370c7a8585847a7f0e6b87ee9d5ab5cab974e5c1bd8",
+      "roles": [
+        "qa_engineer"
+      ],
+      "custom_permissions": [],
+      "custom_module_access": [],
+      "full_name": "Ignacio Solinas",
+      "department": "SDET",
+      "groups": [
+        "test-engineering"
+      ],
+      "is_active": true,
+      "is_locked": false,
+      "locked_until": null,
+      "must_change_password": true,
+      "failed_login_attempts": 0,
+      "last_login": null,
+      "last_password_change": null,
+      "password_history": [
+        "rx44g5whzFbT9RCEoMv0Em3E9lr/Hbv1M9ai5/vSjeE="
+      ],
+      "mfa_enabled": false,
+      "mfa_secret": null,
+      "active_sessions": [],
+      "daily_execution_count": 0,
+      "last_execution_reset": null,
+      "total_executions": 0,
+      "created_at": "2026-01-08T00:35:09.139644",
+      "created_by": "admin",
+      "modified_at": null,
+      "modified_by": null,
+      "last_accessed": null,
+      "terms_accepted": false,
+      "terms_accepted_at": null,
+      "data_usage_consent": false
+    },
+    {
+      "user_id": "e68c19d2f3aaeec83c919ae92bceef42",
+      "username": "vadzhikhalmuradi",
+      "email": "Vadzhikh.Almuradi@newfold.com",
+      "password_hash": "2Gn83xRhcT5557V7lIGyisJx0gKL9e9DeFI+7bnrcUE=",
+      "salt": "eba94c631f3ab0bc4513a3ad844b20a44567394283df474d98a4d125a4884e26",
+      "roles": [
+        "qa_engineer"
+      ],
+      "custom_permissions": [],
+      "custom_module_access": [],
+      "full_name": "Vadzhikh Almuradi",
+      "department": "SDET",
+      "groups": [
+        "test-engineering"
+      ],
+      "is_active": true,
+      "is_locked": false,
+      "locked_until": null,
+      "must_change_password": true,
+      "failed_login_attempts": 0,
+      "last_login": null,
+      "last_password_change": null,
+      "password_history": [
+        "2Gn83xRhcT5557V7lIGyisJx0gKL9e9DeFI+7bnrcUE="
+      ],
+      "mfa_enabled": false,
+      "mfa_secret": null,
+      "active_sessions": [],
+      "daily_execution_count": 0,
+      "last_execution_reset": null,
+      "total_executions": 0,
+      "created_at": "2026-01-08T15:55:32.717479",
+      "created_by": "siddhantwadhwani",
+      "modified_at": null,
+      "modified_by": null,
+      "last_accessed": null,
+      "terms_accepted": false,
+      "terms_accepted_at": null,
+      "data_usage_consent": false
+    },
+    {
+      "user_id": "ef588e6a2bdbf954ce4ae3675848a6a3",
+      "username": "diegopanizo",
+      "email": "diego.panizo@newfold.com",
+      "password_hash": "GRBK5zTm8Z5Ov5AxjMQ0uvvpzqkfEooqYfpzTxHt2as=",
+      "salt": "b7a87027e4d5fb8b7af2e7b18558838c7521b84a593dfdd13cd20775b425ffff",
+      "roles": [
+        "qa_engineer"
+      ],
+      "custom_permissions": [],
+      "custom_module_access": [],
+      "full_name": "Diego Panizo",
+      "department": "SDET",
+      "groups": [
+        "test-engineering"
+      ],
+      "is_active": true,
+      "is_locked": false,
+      "locked_until": null,
+      "must_change_password": true,
+      "failed_login_attempts": 0,
+      "last_login": null,
+      "last_password_change": null,
+      "password_history": [
+        "GRBK5zTm8Z5Ov5AxjMQ0uvvpzqkfEooqYfpzTxHt2as="
+      ],
+      "mfa_enabled": false,
+      "mfa_secret": null,
+      "active_sessions": [],
+      "daily_execution_count": 0,
+      "last_execution_reset": null,
+      "total_executions": 0,
+      "created_at": "2026-01-08T16:12:06.431403",
+      "created_by": "siddhantwadhwani",
+      "modified_at": null,
+      "modified_by": null,
+      "last_accessed": null,
+      "terms_accepted": false,
+      "terms_accepted_at": null,
+      "data_usage_consent": false
+    },
+    {
+      "user_id": "4b5a78f08d2fb8d838d6bd01ae875b83",
+      "username": "jagadeeshmaiya",
+      "email": "jagadeesh.maiya@newfold.com",
+      "password_hash": "W/BJQQUPr1L3SfnqIjUk3kmeGKpovBe4Ea64rFJxPSE=",
+      "salt": "ff2c47f3fc0a18caecfeca328e9b030008b3057e0a2768689dcd60c885a26a3f",
+      "roles": [
+        "developer"
+      ],
+      "custom_permissions": [],
+      "custom_module_access": [],
+      "full_name": "Jagadeesh Maiya",
+      "department": "Engineering",
+      "groups": [
+        "top-management"
+      ],
+      "is_active": true,
+      "is_locked": false,
+      "locked_until": null,
+      "must_change_password": true,
+      "failed_login_attempts": 0,
+      "last_login": null,
+      "last_password_change": null,
+      "password_history": [
+        "W/BJQQUPr1L3SfnqIjUk3kmeGKpovBe4Ea64rFJxPSE="
+      ],
+      "mfa_enabled": false,
+      "mfa_secret": null,
+      "active_sessions": [],
+      "daily_execution_count": 0,
+      "last_execution_reset": null,
+      "total_executions": 0,
+      "created_at": "2026-01-09T12:48:18.377765",
+      "created_by": "siddhantwadhwani",
+      "modified_at": null,
+      "modified_by": null,
+      "last_accessed": null,
+      "terms_accepted": false,
+      "terms_accepted_at": null,
+      "data_usage_consent": false
+    },
+    {
+      "user_id": "3e1a90b3382ecae7977ae71e064db372",
+      "username": "shilpashanbhag",
+      "email": "shilpa.shanbhag@newfold.com",
+      "password_hash": "CS03C/SQ8Kx74q4UZlKFIDdKQVjAPsmaR+4TJHGfx4w=",
+      "salt": "3670ca4d4eb1a0d25b7ba31bc5880b51c78a4ee7fed927e05f2638949e84d5af",
+      "roles": [
+        "developer"
+      ],
+      "custom_permissions": [],
+      "custom_module_access": [],
+      "full_name": "Shilpa Shanbhag",
+      "department": "Engineering",
+      "groups": [
+        "top-management"
+      ],
+      "is_active": true,
+      "is_locked": false,
+      "locked_until": null,
+      "must_change_password": true,
+      "failed_login_attempts": 0,
+      "last_login": null,
+      "last_password_change": null,
+      "password_history": [
+        "CS03C/SQ8Kx74q4UZlKFIDdKQVjAPsmaR+4TJHGfx4w="
+      ],
+      "mfa_enabled": false,
+      "mfa_secret": null,
+      "active_sessions": [],
+      "daily_execution_count": 0,
+      "last_execution_reset": null,
+      "total_executions": 0,
+      "created_at": "2026-01-09T14:38:41.085262",
+      "created_by": "admin",
+      "modified_at": null,
+      "modified_by": null,
+      "last_accessed": null,
+      "terms_accepted": false,
+      "terms_accepted_at": null,
+      "data_usage_consent": false
+    },
+    {
+      "user_id": "73ab0b6f64cc099f02c837fee789df65",
+      "username": "anujsaxena",
+      "email": "anuj.saxena@newfold.com",
+      "password_hash": "zubmZp7i3CE6MJF97C5d5nJZ61i04Dg/UxpDL9zQ9Bc=",
+      "salt": "f83c8fe6ce12e561976ff1a5c9fe221a3d8f1f9d4ed8b873c9a134cb1b9ef72b",
+      "roles": [
+        "developer"
+      ],
+      "custom_permissions": [],
+      "custom_module_access": [],
+      "full_name": "Anuj Saxena",
+      "department": "Engineering",
+      "groups": [
+        "top-management"
+      ],
+      "is_active": true,
+      "is_locked": false,
+      "locked_until": null,
+      "must_change_password": true,
+      "failed_login_attempts": 0,
+      "last_login": null,
+      "last_password_change": null,
+      "password_history": [
+        "zubmZp7i3CE6MJF97C5d5nJZ61i04Dg/UxpDL9zQ9Bc="
+      ],
+      "mfa_enabled": false,
+      "mfa_secret": null,
+      "active_sessions": [],
+      "daily_execution_count": 0,
+      "last_execution_reset": null,
+      "total_executions": 0,
+      "created_at": "2026-01-09T14:39:22.130199",
+      "created_by": "admin",
+      "modified_at": null,
+      "modified_by": null,
+      "last_accessed": null,
+      "terms_accepted": false,
+      "terms_accepted_at": null,
+      "data_usage_consent": false
+    },
+    {
+      "user_id": "13da0f3d308148b7635c69a740fe66ff",
+      "username": "jhanvisarvaiya",
+      "email": "jhanvi.sarvaiya@newfold.com",
+      "password_hash": "Q2AFxNVCBz9+s5KAd5E2LtQkjzHojRHp3/jgGVlso6M=",
+      "salt": "07128192f5562356fa11c4252ee37198a92b62a8123c2a0db68ea4c532e61330",
+      "roles": [
+        "qa_engineer"
+      ],
+      "custom_permissions": [],
+      "custom_module_access": [],
+      "full_name": "Jhanvi Sarvaiya",
+      "department": "SDET",
+      "groups": [
+        "test-engineering"
+      ],
+      "is_active": true,
+      "is_locked": false,
+      "locked_until": null,
+      "must_change_password": true,
+      "failed_login_attempts": 0,
+      "last_login": null,
+      "last_password_change": null,
+      "password_history": [
+        "Q2AFxNVCBz9+s5KAd5E2LtQkjzHojRHp3/jgGVlso6M="
+      ],
+      "mfa_enabled": false,
+      "mfa_secret": null,
+      "active_sessions": [],
+      "daily_execution_count": 0,
+      "last_execution_reset": null,
+      "total_executions": 0,
+      "created_at": "2026-01-09T18:34:43.879262",
+      "created_by": "siddhantwadhwani",
+      "modified_at": null,
+      "modified_by": null,
+      "last_accessed": null,
+      "terms_accepted": false,
+      "terms_accepted_at": null,
+      "data_usage_consent": false
+    }
+  ],
+  "last_modified": "2026-01-09T19:36:30.954280"
+}

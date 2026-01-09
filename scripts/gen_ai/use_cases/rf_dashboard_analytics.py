@@ -22,9 +22,15 @@ from io import BytesIO
 import xml.etree.ElementTree as ET
 import re
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Enhanced logging setup
+try:
+    from enhanced_logging import get_logger, EmojiIndicators, PerformanceTimer, ProgressTracker
+    logger = get_logger("RFDashboardAnalytics", level=logging.INFO, log_file="rf_dashboard_analytics.log")
+except ImportError:
+    # Fallback to standard logging if enhanced_logging is not available
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+    print("Warning: Enhanced logging not available, using standard logging")
 
 # Ensure parent directory is in path to import shared modules
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -3079,12 +3085,10 @@ def show_rf_dashboard_analytics():
         col1, col2 = st.columns(2)
 
         with col1:
-            jenkins_url = st.text_input(
-                "Jenkins URL",
-                value=st.session_state.get('rf_jenkins_url', ''),
-                help="e.g., https://jenkins.example.com",
-                placeholder="https://jenkins.example.com"
-            )
+            # Hardcoded Jenkins URL
+            jenkins_url = "https://testeng1.qainfra.registeredsite.com:8080/"
+            st.info(f"🔗 Jenkins URL: {jenkins_url}")
+
             username = st.text_input(
                 "Jenkins Username",
                 value=st.session_state.get('rf_jenkins_username', ''),
@@ -5525,12 +5529,10 @@ def display_analysis_results(metrics_list: List[RFTestMetrics], analyzer: RFDash
         with st.expander("⚙️ JIRA Configuration", expanded=True):
             col1, col2 = st.columns(2)
             with col1:
-                jira_url = st.text_input(
-                    "JIRA URL",
-                    value=st.session_state.get('jira_url', ''),
-                    placeholder="https://your-company.atlassian.net",
-                    key="jira_url_input"
-                )
+                # Hardcoded JIRA URL
+                jira_url = "https://newfold.atlassian.net/"
+                st.info(f"🔗 JIRA URL: {jira_url}")
+
                 jira_email = st.text_input(
                     "JIRA Email",
                     value=st.session_state.get('jira_email', ''),

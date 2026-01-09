@@ -2893,9 +2893,9 @@ def setup_jenkins_connection(save_config: bool = True) -> Optional[JenkinsClient
 
     # Connection form
     with st.sidebar.form("jenkins_connection_form"):
-        jenkins_url = st.text_input("Jenkins URL",
-                                   value=saved_config.get("url", "https://jenkins.example.com"),
-                                   help="The base URL of your Jenkins instance")
+        # Hardcoded Jenkins URL
+        jenkins_url = "https://testeng1.qainfra.registeredsite.com:8080/"
+        st.info(f"🔗 Jenkins URL: {jenkins_url}")
 
         username = st.text_input("Username",
                                value=saved_config.get("username", ""),

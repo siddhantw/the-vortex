@@ -22,9 +22,15 @@ import hashlib
 import base64
 import time
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Enhanced logging setup
+try:
+    from enhanced_logging import get_logger, EmojiIndicators, PerformanceTimer, ProgressTracker
+    logger = get_logger("SecurityPenetrationTesting", level=logging.INFO, log_file="security_penetration_testing.log")
+except ImportError:
+    # Fallback to standard logging if enhanced_logging is not available
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+    print("Warning: Enhanced logging not available, using standard logging")
 
 # OWASP Top 10 2021 Categories
 OWASP_TOP_10 = {

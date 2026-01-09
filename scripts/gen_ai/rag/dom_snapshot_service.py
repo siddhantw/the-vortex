@@ -283,7 +283,7 @@ class DOMSnapshotService:
             options = Options()
             viewport = self.config.get('viewport', {'width': 1920, 'height': 1080})
             if self.config.get('headless', True):
-                options.add_argument('--headless')
+                options.add_argument('--headless=new')  # Use new headless mode
             options.add_argument('--no-sandbox')
             options.add_argument('--disable-dev-shm-usage')
             options.add_argument('--disable-gpu')
@@ -292,7 +292,18 @@ class DOMSnapshotService:
             if self.config.get('incognito', True):
                 options.add_argument('--incognito')
 
-            self.driver = webdriver.Chrome(options=options)
+            # Try to use webdriver-manager for automatic ChromeDriver management
+            try:
+                from selenium.webdriver.chrome.service import Service
+                from webdriver_manager.chrome import ChromeDriverManager
+                service = Service(ChromeDriverManager().install())
+                self.driver = webdriver.Chrome(service=service, options=options)
+                logger.info("Selenium WebDriver initialized with webdriver-manager")
+            except Exception as wdm_error:
+                logger.warning(f"webdriver-manager failed: {wdm_error}, trying fallback...")
+                self.driver = webdriver.Chrome(options=options)
+                logger.info("Selenium WebDriver initialized with fallback method")
+
             try:
                 # Force top-left origin and fixed viewport; avoid additional maximize to prevent flicker
                 self.driver.set_window_position(0, 0)

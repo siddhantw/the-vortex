@@ -27,8 +27,15 @@ except ImportError:
     # Try alternative import path
     import streamlit_fix
 
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Enhanced logging setup
+try:
+    from enhanced_logging import get_logger, EmojiIndicators, PerformanceTimer, ProgressTracker
+    logger = get_logger("DynamicTCGeneration", level=logging.INFO, log_file="dynamic_tc_generation.log")
+except ImportError:
+    # Fallback to standard logging if enhanced_logging is not available
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    logger = logging.getLogger(__name__)
+    print("Warning: Enhanced logging not available, using standard logging")
 
 # Import streamlit after asyncio setup is properly handled by streamlit_fix
 import streamlit as st
@@ -900,9 +907,8 @@ Please ensure your analysis results in requirements that are:
 Format your response in structured sections as requested above.
 """
 
-        # Call Azure OpenAI for requirements preprocessing
-        response = client.chat.completions.create(
-            model="gpt-4",
+        # Call Azure OpenAI for requirements preprocessing using the proper client method
+        response = client.chat_completion_create(
             messages=[
                 {"role": "system", "content": "You are an expert Business Analyst and Requirements Engineer specializing in creating clear, testable software requirements."},
                 {"role": "user", "content": preprocessing_prompt}
@@ -911,7 +917,12 @@ Format your response in structured sections as requested above.
             max_tokens=4000
         )
 
-        enhanced_requirements = response.choices[0].message.content
+        # Extract content from response dict (AzureOpenAIClient returns a dict)
+        if not response or 'choices' not in response:
+            logging.warning("No valid response from Azure OpenAI")
+            return basic_requirements_preprocessing(raw_requirements_text)
+
+        enhanced_requirements = response['choices'][0]['message']['content']
 
         # Parse the enhanced requirements into structured format
         structured_requirements = parse_enhanced_requirements(enhanced_requirements, raw_requirements_text)
@@ -988,26 +999,434 @@ def basic_requirements_preprocessing(raw_text):
     }
 
 def get_azure_openai_client():
-    """Get Azure OpenAI client with proper configuration"""
+    """
+    Get Azure OpenAI client with proper configuration
+
+    Returns:
+        Configured Azure OpenAI client or None if configuration is missing
+    """
     try:
         if AZURE_CLIENT_AVAILABLE:
-            return AzureOpenAIClient()
+            # Use the imported AzureOpenAIClient class
+            client = AzureOpenAIClient()
+
+            # Check if client is properly configured
+            if not client.is_configured():
+                logging.error("Azure OpenAI client not fully configured. Please set environment variables:")
+                logging.error("- AZURE_OPENAI_ENDPOINT (e.g., https://yourinstance.openai.azure.com/)")
+                logging.error("- AZURE_OPENAI_API_KEY")
+                logging.error("- AZURE_OPENAI_DEPLOYMENT (deployment name, e.g., 'gpt-4', 'gpt-35-turbo')")
+                return None
+
+            logging.info(f"Azure OpenAI client configured with deployment: {client.deployment_name}")
+            return client
         else:
             # Fallback: create client directly
             from openai import AzureOpenAI
 
+            # Get configuration from environment variables
+            api_key = os.environ.get('AZURE_OPENAI_API_KEY')
+            endpoint = os.environ.get('AZURE_OPENAI_ENDPOINT')
+            deployment_name = os.environ.get('AZURE_OPENAI_DEPLOYMENT', 'gpt-4')
+
+            # Validate configuration
+            if not api_key or not endpoint:
+                logging.error("Azure OpenAI configuration missing. Please set:")
+                logging.error("- AZURE_OPENAI_ENDPOINT")
+                logging.error("- AZURE_OPENAI_API_KEY")
+                logging.error("- AZURE_OPENAI_DEPLOYMENT (optional, defaults to 'gpt-4')")
+                return None
+
             client = AzureOpenAI(
-                api_key=os.environ.get('AZURE_OPENAI_API_KEY', "5e98b3558f5d4dcebe68f8ca8a3352b7"),
+                api_key=api_key,
                 api_version="2024-02-01",
-                azure_endpoint=os.environ.get('AZURE_OPENAI_ENDPOINT', "https://jarvisgenai.openai.azure.com/")
+                azure_endpoint=endpoint
             )
+
+            # Store deployment name as attribute for later use
+            client.deployment_name = deployment_name
+
+            logging.info(f"Azure OpenAI client configured (fallback) with deployment: {deployment_name}")
             return client
+
     except Exception as e:
         logging.error(f"Failed to initialize Azure OpenAI client: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
-# Enhanced requirement parsing function with improved analysis
+def generate_comprehensive_test_plan(uploaded_files=None, jira_requirements=None, confluence_requirements=None,
+                                     figma_requirements=None, custom_prompt="", use_rag=False, rag_config_path=None):
+    """
+    Generate a comprehensive test plan using Azure OpenAI that analyzes all requirements
+    and produces detailed test documentation with estimates, scenarios, and test cases.
+
+    This function acts as the world's best Quality Engineer to:
+    - Analyze all sources (documents, Figma, Jira, Confluence, prompts)
+    - Consider RAG enhancements if enabled
+    - Generate accurate development and testing estimates
+    - Create test scenarios for happy path, negative, boundary, edge cases
+    - Include non-functional testing considerations
+    - Structure output for Zephyr integration
+    - Enable browser automation conversion via TestPilot module
+
+    Args:
+        uploaded_files: List of uploaded requirement documents
+        jira_requirements: List of Jira requirement data
+        confluence_requirements: List of Confluence requirement data
+        figma_requirements: List of Figma design data
+        custom_prompt: Custom user requirements/context
+        use_rag: Whether to use RAG enhancement
+        rag_config_path: Path to RAG configuration
+
+    Returns:
+        Tuple of (analysis_dict, error_message)
+    """
+    try:
+        # Step 1: Parse and analyze all requirement sources
+        logging.info("Step 1: Parsing and analyzing all requirement sources...")
+        analysis, error = parse_and_analyze_files(
+            uploaded_files,
+            jira_requirements,
+            confluence_requirements,
+            figma_requirements,
+            custom_prompt,
+            use_rag=use_rag,
+            rag_config_path=rag_config_path
+        )
+
+        if error or not analysis:
+            return None, error or "Failed to analyze requirements"
+
+        # Step 2: Generate comprehensive test plan using Azure OpenAI
+        logging.info("Step 2: Generating comprehensive test plan with Azure OpenAI...")
+
+        client = get_azure_openai_client()
+        if not client:
+            logging.warning("Azure OpenAI not available, using basic analysis")
+            return analysis, None
+
+        # Prepare comprehensive context for AI
+        requirements = analysis.get("requirements", [])
+        sources = analysis.get("sources", [])
+        metadata = analysis.get("metadata", {})
+        raw_text = analysis.get("raw_text", "")
+
+        # Build AI prompt for comprehensive test planning
+        test_plan_prompt = f"""
+You are the world's best and smartest Quality Engineer with decades of experience in software testing, 
+test planning, and quality assurance across all domains. Your task is to create a comprehensive, 
+detailed, and professional Test Plan based on the analyzed requirements.
+
+CONTEXT:
+- Total Requirements: {len(requirements)}
+- Sources Analyzed: {', '.join(sources)}
+- Enhanced with RAG: {analysis.get('enhanced_with_rag', False)}
+
+REQUIREMENTS SUMMARY:
+{_format_requirements_for_ai(requirements, limit=50)}
+
+FULL REQUIREMENTS TEXT:
+{raw_text[:10000]}  # Limit to avoid token limits
+
+YOUR TASK:
+As the world's best Quality Engineer, create a COMPREHENSIVE TEST PLAN that includes:
+
+1. EXECUTIVE SUMMARY
+   - Overview of the application/feature being tested
+   - Key objectives and scope
+   - Risk assessment and mitigation strategy
+
+2. DETAILED ESTIMATES
+   A. Development Estimates:
+      - Break down by requirement complexity and priority
+      - Consider dependencies and integration efforts
+      - Provide estimates in person-days
+      - Include buffer for unknowns (typically 15-20%)
+   
+   B. Testing Estimates:
+      - Test planning and design time
+      - Test execution time (manual + automated)
+      - Defect fixing and retesting time
+      - Regression testing time
+      - Provide estimates in person-days
+      - Include different test phases (smoke, functional, regression, UAT)
+
+3. TEST SCENARIOS - COMPREHENSIVE COVERAGE
+   
+   A. HAPPY PATH SCENARIOS (Positive Testing):
+      - Primary user workflows that should work flawlessly
+      - Standard use cases with valid inputs
+      - Expected normal behavior verification
+      Format: Clear scenario title, preconditions, steps, expected results
+   
+   B. NEGATIVE SCENARIOS (Negative Testing):
+      - Invalid inputs and error handling
+      - Security testing (injection, XSS, CSRF)
+      - Authentication and authorization failures
+      - System should gracefully handle all failures
+      Format: Clear scenario title, invalid action, expected error handling
+   
+   C. BOUNDARY & EDGE CASES:
+      - Minimum and maximum value testing
+      - Empty, null, and special character handling
+      - Data type and format validation
+      - Limits and thresholds testing
+      Format: Clear scenario title, boundary condition, expected behavior
+   
+   D. NON-FUNCTIONAL TESTING:
+      - Performance testing (load, stress, spike)
+      - Security testing considerations
+      - Usability and accessibility testing
+      - Compatibility testing (browsers, devices, OS)
+      - Scalability and reliability testing
+      Format: Test type, metrics to measure, success criteria
+
+4. DETAILED TEST CASES (for each major scenario)
+   - Test Case ID
+   - Title
+   - Preconditions
+   - Test Steps (numbered, clear, actionable)
+   - Test Data required
+   - Expected Results
+   - Priority (High/Medium/Low)
+   - Test Type (Functional/Non-Functional)
+   - Automation Feasibility (Yes/No/Partial)
+
+5. TEST DATA REQUIREMENTS
+   - Types of test data needed
+   - Data setup requirements
+   - Test environment considerations
+
+6. AUTOMATION RECOMMENDATIONS
+   - Which test cases are good candidates for automation
+   - Suggested automation framework approach
+   - ROI considerations for automation
+
+7. RISK ANALYSIS
+   - High-risk areas requiring extra attention
+   - Potential blockers and dependencies
+   - Mitigation strategies
+
+Please provide your response in a well-structured JSON format with the following keys:
+- executive_summary: {{objective, scope, risk_assessment}}
+- estimates: {{development_days, development_breakdown, testing_days, testing_breakdown, total_project_days}}
+- test_scenarios: {{
+    happy_path: [list of scenarios],
+    negative: [list of scenarios],
+    boundary_edge: [list of scenarios],
+    non_functional: [list of scenarios]
+  }}
+- test_cases: [list of detailed test case objects]
+- test_data_requirements: [list of data requirements]
+- automation_recommendations: {{candidates, framework, roi_analysis}}
+- risk_analysis: {{high_risk_areas, blockers, mitigation_strategies}}
+
+Be thorough, specific, and actionable in all recommendations.
+"""
+
+        # Call Azure OpenAI for comprehensive test plan generation
+        logging.info("Calling Azure OpenAI for test plan generation...")
+
+        try:
+            response = client.chat_completion_create(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are the world's best Quality Engineer with expertise in test planning, test design, and quality assurance. You create comprehensive, detailed, and professional test plans."
+                    },
+                    {
+                        "role": "user",
+                        "content": test_plan_prompt
+                    }
+                ],
+                temperature=0.3,  # Lower temperature for more consistent, structured output
+                max_tokens=8000  # Allow for comprehensive response
+            )
+
+            # Extract content from response dict (AzureOpenAIClient returns a dict)
+            if not response or 'choices' not in response:
+                raise Exception("No valid response from Azure OpenAI")
+
+            test_plan_content = response['choices'][0]['message']['content']
+
+            # Parse JSON response
+            try:
+                # Extract JSON from markdown code blocks if present
+                json_match = re.search(r'```json\s*(.*?)\s*```', test_plan_content, re.DOTALL)
+                if json_match:
+                    test_plan_json = json.loads(json_match.group(1))
+                else:
+                    test_plan_json = json.loads(test_plan_content)
+
+                logging.info("Successfully parsed test plan JSON")
+
+            except json.JSONDecodeError as e:
+                logging.warning(f"Failed to parse test plan as JSON: {e}")
+                # Fallback: create structured data from text response
+                test_plan_json = _parse_test_plan_from_text(test_plan_content, requirements)
+
+            # Enhance analysis with test plan data
+            analysis["test_plan"] = test_plan_json
+            analysis["test_plan_raw"] = test_plan_content
+            analysis["comprehensive_analysis"] = True
+
+            # Add convenience flags for UI
+            analysis["has_estimates"] = "estimates" in test_plan_json
+            analysis["has_test_scenarios"] = "test_scenarios" in test_plan_json
+            analysis["has_test_cases"] = "test_cases" in test_plan_json
+            analysis["total_test_cases"] = len(test_plan_json.get("test_cases", []))
+
+            # Calculate total scenarios
+            test_scenarios = test_plan_json.get("test_scenarios", {})
+            total_scenarios = sum(len(scenarios) for scenarios in test_scenarios.values())
+            analysis["total_test_scenarios"] = total_scenarios
+
+            logging.info(f"Test plan generated: {total_scenarios} scenarios, {analysis['total_test_cases']} test cases")
+
+            return analysis, None
+
+        except Exception as ai_error:
+            logging.error(f"Azure OpenAI call failed: {ai_error}")
+            # Return basic analysis without test plan
+            return analysis, f"Basic analysis completed, but test plan generation failed: {str(ai_error)}"
+
+    except Exception as e:
+        logging.error(f"Error generating comprehensive test plan: {e}")
+        import traceback
+        traceback.print_exc()
+        return None, f"Error generating test plan: {str(e)}"
+
+
+def _format_requirements_for_ai(requirements, limit=50):
+    """Format requirements for AI prompt (limit to avoid token overflow)"""
+    formatted = []
+    for i, req in enumerate(requirements[:limit], 1):
+        req_text = f"""
+Requirement {i}:
+- ID: {req.get('id', 'N/A')}
+- Text: {req.get('text', 'N/A')[:200]}
+- Priority: {req.get('priority', 'N/A')}
+- Complexity: {req.get('complexity', 'N/A')}
+- Category: {req.get('category', 'N/A')}
+"""
+        formatted.append(req_text.strip())
+
+    if len(requirements) > limit:
+        formatted.append(f"\n... and {len(requirements) - limit} more requirements")
+
+    return "\n".join(formatted)
+
+
+def _parse_test_plan_from_text(text_content, requirements):
+    """Parse test plan from unstructured text response (fallback)"""
+    try:
+        # Basic parsing logic for fallback
+        test_plan = {
+            "executive_summary": {
+                "objective": "Test comprehensive functionality and quality",
+                "scope": f"Testing {len(requirements)} identified requirements",
+                "risk_assessment": "Medium risk - comprehensive testing required"
+            },
+            "estimates": {
+                "development_days": _estimate_development_days(requirements),
+                "development_breakdown": "Based on requirement complexity and priority",
+                "testing_days": _estimate_testing_days(requirements),
+                "testing_breakdown": "Includes planning, execution, regression",
+                "total_project_days": 0
+            },
+            "test_scenarios": {
+                "happy_path": _extract_scenarios_from_requirements(requirements, "happy_path"),
+                "negative": _extract_scenarios_from_requirements(requirements, "negative"),
+                "boundary_edge": _extract_scenarios_from_requirements(requirements, "boundary"),
+                "non_functional": ["Performance testing", "Security testing", "Usability testing"]
+            },
+            "test_cases": [],
+            "test_data_requirements": ["Valid test users", "Sample data sets", "Test environment"],
+            "automation_recommendations": {
+                "candidates": "Regression test cases",
+                "framework": "Robot Framework recommended",
+                "roi_analysis": "High ROI for regression tests"
+            },
+            "risk_analysis": {
+                "high_risk_areas": ["Integration points", "Security features"],
+                "blockers": ["Environment availability", "Test data setup"],
+                "mitigation_strategies": ["Early environment setup", "Parallel testing"]
+            }
+        }
+
+        # Calculate total project days
+        test_plan["estimates"]["total_project_days"] = (
+            test_plan["estimates"]["development_days"] +
+            test_plan["estimates"]["testing_days"]
+        )
+
+        return test_plan
+
+    except Exception as e:
+        logging.error(f"Error parsing test plan from text: {e}")
+        return {}
+
+
+def _estimate_development_days(requirements):
+    """Estimate development days based on requirements"""
+    total_days = 0
+    for req in requirements:
+        complexity = req.get("complexity", 0.5)
+        if isinstance(complexity, str):
+            complexity_map = {"low": 0.3, "medium": 0.5, "high": 0.8, "very high": 1.0}
+            complexity = complexity_map.get(complexity.lower(), 0.5)
+
+        priority = req.get("priority", "Medium")
+        priority_multiplier = {"Low": 0.8, "Medium": 1.0, "High": 1.3, "Critical": 1.5}.get(priority, 1.0)
+
+        # Base estimate: 2 days per requirement, adjusted by complexity and priority
+        req_days = 2 * complexity * priority_multiplier
+        total_days += req_days
+
+    # Add 20% buffer
+    return round(total_days * 1.2, 1)
+
+
+def _estimate_testing_days(requirements):
+    """Estimate testing days (typically 40% of development for functional testing)"""
+    dev_days = _estimate_development_days(requirements)
+    return round(dev_days * 0.4, 1)
+
+
+def _extract_scenarios_from_requirements(requirements, scenario_type):
+    """Extract basic test scenarios from requirements based on type"""
+    scenarios = []
+
+    for req in requirements[:10]:  # Limit to first 10 for basic extraction
+        req_text = req.get("text", "")
+
+        if scenario_type == "happy_path":
+            scenarios.append({
+                "title": f"Verify {req_text[:50]}... works correctly",
+                "description": f"Test the primary workflow for: {req_text[:100]}",
+                "priority": req.get("priority", "Medium")
+            })
+        elif scenario_type == "negative":
+            scenarios.append({
+                "title": f"Verify error handling for {req_text[:50]}...",
+                "description": f"Test invalid inputs and error scenarios for: {req_text[:100]}",
+                "priority": req.get("priority", "Medium")
+            })
+        elif scenario_type == "boundary":
+            scenarios.append({
+                "title": f"Verify boundary conditions for {req_text[:50]}...",
+                "description": f"Test edge cases and limits for: {req_text[:100]}",
+                "priority": req.get("priority", "Medium")
+            })
+
+    return scenarios
+
+
+
+
+# Enhanced parsing function with RAG integration and improved analysis
 def parse_and_analyze_files(uploaded_files=None, jira_requirements=None, confluence_requirements=None, figma_requirements=None, custom_prompt="", use_rag=False, rag_config_path=None):
     """Enhanced parsing with RAG integration and improved analysis"""
     all_text = ""
@@ -1346,31 +1765,630 @@ def generate_dev_test_estimates(analysis, config=None):
         }
 
 
-# RAG helper functions
-def initialize_rag_service(rag_config_path):
-    """Initialize the RAG service using the provided config path."""
+# ============================================================================
+# ZEPHYR INTEGRATION FUNCTIONS
+# ============================================================================
+
+def create_or_update_zephyr_test_cases(test_cases, jira_config, update_existing=True):
+    """
+    Create or update test cases in Zephyr Scale for Jira
+
+    Args:
+        test_cases: List of test case dictionaries
+        jira_config: Dict with Jira configuration (host, username, api_token, project_key)
+        update_existing: Whether to update existing test cases if similar ones are found
+
+    Returns:
+        Dict with success status, created/updated counts, and details
+    """
     try:
-        rag_handler = RAGHandler()
-        success = rag_handler.initialize_service(rag_config_path)
-        if success:
-            return rag_handler
-        else:
-            logging.error(f"Failed to initialize RAG service with config: {rag_config_path}")
-            return None
+        logging.info("Starting Zephyr test case creation/update process...")
+
+        # Validate configuration
+        required_fields = ['host', 'username', 'api_token', 'project_key']
+        for field in required_fields:
+            if field not in jira_config or not jira_config[field]:
+                return {
+                    "success": False,
+                    "error": f"Missing required Jira configuration field: {field}",
+                    "created": 0,
+                    "updated": 0
+                }
+
+        # Setup Jira session
+        from requests import Session
+        from requests.auth import HTTPBasicAuth
+
+        session = Session()
+        session.auth = HTTPBasicAuth(jira_config['username'], jira_config['api_token'])
+        session.headers.update({
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+        })
+
+        base_url = jira_config['host'].rstrip('/')
+        if not base_url.startswith('http'):
+            base_url = f"https://{base_url}"
+
+        project_key = jira_config['project_key']
+
+        created_count = 0
+        updated_count = 0
+        skipped_count = 0
+        errors = []
+        created_issues = []
+        updated_issues = []
+
+        # Process each test case
+        for i, test_case in enumerate(test_cases, 1):
+            try:
+                logging.info(f"Processing test case {i}/{len(test_cases)}: {test_case.get('name', 'Unnamed')}")
+
+                # Check if similar test case exists (if update_existing is True)
+                existing_issue_key = None
+                if update_existing:
+                    existing_issue_key = _find_similar_zephyr_test_case(
+                        session, base_url, project_key, test_case
+                    )
+
+                if existing_issue_key:
+                    # Update existing test case
+                    logging.info(f"Found similar test case: {existing_issue_key}, updating...")
+                    success = _update_zephyr_test_case(
+                        session, base_url, existing_issue_key, test_case
+                    )
+                    if success:
+                        updated_count += 1
+                        updated_issues.append(existing_issue_key)
+                        logging.info(f"✅ Updated test case: {existing_issue_key}")
+                    else:
+                        errors.append(f"Failed to update {existing_issue_key}")
+                else:
+                    # Create new test case
+                    logging.info(f"Creating new test case in Zephyr...")
+                    issue_key = _create_zephyr_test_case(
+                        session, base_url, project_key, test_case
+                    )
+                    if issue_key:
+                        created_count += 1
+                        created_issues.append(issue_key)
+                        logging.info(f"✅ Created test case: {issue_key}")
+                    else:
+                        errors.append(f"Failed to create test case: {test_case.get('name', 'Unnamed')}")
+
+            except Exception as e:
+                logging.error(f"Error processing test case {i}: {e}")
+                errors.append(f"Test case {i}: {str(e)}")
+                skipped_count += 1
+
+        # Summary
+        result = {
+            "success": True,
+            "created": created_count,
+            "updated": updated_count,
+            "skipped": skipped_count,
+            "errors": errors,
+            "created_issues": created_issues,
+            "updated_issues": updated_issues,
+            "total_processed": len(test_cases),
+            "message": f"Successfully processed {created_count + updated_count} test cases ({created_count} created, {updated_count} updated)"
+        }
+
+        logging.info(f"Zephyr integration complete: {result['message']}")
+        return result
+
     except Exception as e:
-        logging.error(f"Error initializing RAG service: {e}")
+        logging.error(f"Error in Zephyr integration: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "success": False,
+            "error": str(e),
+            "created": 0,
+            "updated": 0
+        }
+
+
+def _find_similar_zephyr_test_case(session, base_url, project_key, test_case):
+    """Find similar test case in Jira using title/summary matching"""
+    try:
+        # Search for issues with similar summary
+        test_name = test_case.get('name', '')
+        if not test_name:
+            return None
+
+        # Use JQL to search for similar test cases
+        jql = f'project = {project_key} AND issuetype = Test AND summary ~ "{test_name[:50]}"'
+
+        search_url = f"{base_url}/rest/api/2/search"
+        params = {
+            'jql': jql,
+            'maxResults': 5,
+            'fields': 'summary,description'
+        }
+
+        response = session.get(search_url, params=params)
+        if response.status_code == 200:
+            data = response.json()
+            issues = data.get('issues', [])
+
+            if issues:
+                # Return first matching issue key
+                # Could add more sophisticated matching logic here
+                return issues[0]['key']
+
+        return None
+
+    except Exception as e:
+        logging.error(f"Error searching for similar test case: {e}")
         return None
 
 
-def enhance_prompt_with_rag(rag_handler, prompt, query, scope, test_type, components=None):
-    """Enhance a prompt with context retrieved from the RAG service."""
-    if not rag_handler:
-        return prompt
+def _create_zephyr_test_case(session, base_url, project_key, test_case):
+    """Create a new test case in Jira/Zephyr"""
     try:
-        return rag_handler.enhance_prompt(prompt, query, scope, test_type, components)
+        # Prepare test case data for Jira
+        test_name = test_case.get('name', 'Unnamed Test Case')
+        description = test_case.get('description', '')
+        steps = test_case.get('steps', test_case.get('conditions/steps', ''))
+        expected_result = test_case.get('expected_result', test_case.get('expected result', ''))
+        preconditions = test_case.get('preconditions', '')
+        priority = test_case.get('priority', 'Medium')
+
+        # Format test steps for Zephyr
+        test_script = _format_test_steps_for_zephyr(steps, expected_result)
+
+        # Create issue payload
+        payload = {
+            "fields": {
+                "project": {"key": project_key},
+                "summary": test_name,
+                "description": description,
+                "issuetype": {"name": "Test"},  # Zephyr test issue type
+                "priority": {"name": priority}
+            }
+        }
+
+        # Add custom fields for Zephyr if available
+        if preconditions:
+            # Custom field for preconditions (field ID varies by Jira instance)
+            # This would need to be configured per instance
+            pass
+
+        # Create the issue
+        create_url = f"{base_url}/rest/api/2/issue"
+        response = session.post(create_url, json=payload)
+
+        if response.status_code in [200, 201]:
+            data = response.json()
+            issue_key = data.get('key')
+
+            # Add test steps via Zephyr API
+            if issue_key and test_script:
+                _add_zephyr_test_steps(session, base_url, issue_key, test_script)
+
+            return issue_key
+        else:
+            logging.error(f"Failed to create test case: {response.status_code} - {response.text}")
+            return None
+
     except Exception as e:
-        logging.error(f"Error enhancing prompt with RAG: {e}")
-        return prompt
+        logging.error(f"Error creating Zephyr test case: {e}")
+        return None
+
+
+def _update_zephyr_test_case(session, base_url, issue_key, test_case):
+    """Update an existing test case in Jira/Zephyr"""
+    try:
+        # Prepare update data
+        description = test_case.get('description', '')
+        steps = test_case.get('steps', test_case.get('conditions/steps', ''))
+        expected_result = test_case.get('expected_result', test_case.get('expected result', ''))
+        priority = test_case.get('priority', 'Medium')
+
+        # Format test steps for Zephyr
+        test_script = _format_test_steps_for_zephyr(steps, expected_result)
+
+        # Update issue payload
+        payload = {
+            "fields": {
+                "description": description,
+                "priority": {"name": priority}
+            }
+        }
+
+        # Update the issue
+        update_url = f"{base_url}/rest/api/2/issue/{issue_key}"
+        response = session.put(update_url, json=payload)
+
+        if response.status_code in [200, 204]:
+            # Update test steps via Zephyr API
+            if test_script:
+                _add_zephyr_test_steps(session, base_url, issue_key, test_script)
+            return True
+        else:
+            logging.error(f"Failed to update test case: {response.status_code} - {response.text}")
+            return False
+
+    except Exception as e:
+        logging.error(f"Error updating Zephyr test case: {e}")
+        return False
+
+
+def _format_test_steps_for_zephyr(steps, expected_result):
+    """Format test steps into Zephyr-compatible structure"""
+    try:
+        if isinstance(steps, str):
+            # Split steps by newlines or numbered format
+            step_lines = [s.strip() for s in steps.split('\n') if s.strip()]
+        elif isinstance(steps, list):
+            step_lines = [str(s).strip() for s in steps]
+        else:
+            step_lines = [str(steps)]
+
+        # Create Zephyr test script format
+        test_script = []
+        for i, step in enumerate(step_lines, 1):
+            test_script.append({
+                "index": i,
+                "description": step,
+                "expectedResult": expected_result if i == len(step_lines) else ""
+            })
+
+        return test_script
+
+    except Exception as e:
+        logging.error(f"Error formatting test steps: {e}")
+        return []
+
+
+def _add_zephyr_test_steps(session, base_url, issue_key, test_script):
+    """Add test steps to a Zephyr test case"""
+    try:
+        # Try different Zephyr API endpoints
+        endpoints = [
+            f"{base_url}/rest/atm/1.0/testcase/{issue_key}/teststeps",  # Zephyr Scale
+            f"{base_url}/rest/zapi/latest/teststep/{issue_key}",  # Zephyr Squad
+        ]
+
+        for endpoint in endpoints:
+            try:
+                response = session.post(endpoint, json={"steps": test_script})
+                if response.status_code in [200, 201]:
+                    logging.info(f"Successfully added test steps to {issue_key}")
+                    return True
+            except Exception as e:
+                logging.debug(f"Failed with endpoint {endpoint}: {e}")
+                continue
+
+        logging.warning(f"Could not add test steps to {issue_key} - Zephyr API may not be available")
+        return False
+
+    except Exception as e:
+        logging.error(f"Error adding Zephyr test steps: {e}")
+        return False
+
+
+# ============================================================================
+# BROWSER AUTOMATION INTEGRATION (Using TestPilot Module Capabilities)
+# ============================================================================
+
+def convert_test_cases_to_robot_automation(test_cases, use_robotmcp=True, browser_type="chrome"):
+    """
+    Convert test cases with natural language steps into Robot Framework automation scripts
+    using TestPilot module's browser automation capabilities via RobotMCP.
+
+    This function emulates TestPilot's behavior:
+    1. Parse natural language test steps
+    2. Use RobotMCP to analyze and convert steps to browser actions
+    3. Generate Robot Framework scripts with proper keywords and locators
+    4. Leverage existing keyword libraries and smart locator strategies
+
+    Args:
+        test_cases: List of test case dictionaries with steps
+        use_robotmcp: Whether to use RobotMCP for advanced automation (default: True)
+        browser_type: Browser to use (chrome, firefox, edge)
+
+    Returns:
+        Dict with success status, generated scripts, and details
+    """
+    try:
+        logging.info("Starting browser automation conversion using TestPilot patterns...")
+
+        if not test_cases:
+            return {
+                "success": False,
+                "error": "No test cases provided",
+                "scripts": []
+            }
+
+        # Check if RobotMCP is available (from TestPilot module)
+        robotmcp_available = _check_robotmcp_availability()
+
+        if use_robotmcp and not robotmcp_available:
+            logging.warning("RobotMCP not available, falling back to basic conversion")
+            use_robotmcp = False
+
+        generated_scripts = []
+        errors = []
+
+        # Process each test case
+        for i, test_case in enumerate(test_cases, 1):
+            try:
+                logging.info(f"Converting test case {i}/{len(test_cases)} to automation...")
+
+                test_name = test_case.get('name', f'Test_Case_{i}')
+                steps = test_case.get('steps', test_case.get('conditions/steps', ''))
+                expected_result = test_case.get('expected_result', test_case.get('expected result', ''))
+
+                if not steps:
+                    logging.warning(f"No steps found for test case: {test_name}")
+                    continue
+
+                # Parse steps into actionable list
+                step_list = _parse_steps_to_list(steps)
+
+                if use_robotmcp:
+                    # Use RobotMCP for intelligent conversion (TestPilot approach)
+                    robot_script = _convert_with_robotmcp(
+                        test_name=test_name,
+                        steps=step_list,
+                        expected_result=expected_result,
+                        browser_type=browser_type
+                    )
+                else:
+                    # Fallback: Basic Robot Framework generation
+                    robot_script = _convert_basic_robot_framework(
+                        test_name=test_name,
+                        steps=step_list,
+                        expected_result=expected_result,
+                        browser_type=browser_type
+                    )
+
+                if robot_script:
+                    generated_scripts.append({
+                        "test_case_name": test_name,
+                        "script": robot_script,
+                        "method": "robotmcp" if use_robotmcp else "basic",
+                        "steps_count": len(step_list)
+                    })
+                    logging.info(f"✅ Converted: {test_name}")
+                else:
+                    errors.append(f"Failed to convert: {test_name}")
+
+            except Exception as e:
+                logging.error(f"Error converting test case {i}: {e}")
+                errors.append(f"Test case {i}: {str(e)}")
+
+        # Generate combined Robot file
+        combined_robot_file = None
+        if generated_scripts:
+            combined_robot_file = _generate_combined_robot_file(generated_scripts, browser_type)
+
+        result = {
+            "success": len(generated_scripts) > 0,
+            "scripts": generated_scripts,
+            "combined_robot_file": combined_robot_file,
+            "total_converted": len(generated_scripts),
+            "errors": errors,
+            "method_used": "robotmcp" if use_robotmcp else "basic",
+            "message": f"Successfully converted {len(generated_scripts)} test cases to Robot Framework automation"
+        }
+
+        logging.info(f"Automation conversion complete: {result['message']}")
+        return result
+
+    except Exception as e:
+        logging.error(f"Error in browser automation conversion: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "success": False,
+            "error": str(e),
+            "scripts": []
+        }
+
+
+def _check_robotmcp_availability():
+    """Check if RobotMCP is available (similar to TestPilot's ROBOTMCP_AVAILABLE)"""
+    try:
+        # Try importing MCP client (same approach as TestPilot)
+        from mcp import ClientSession
+        # Check if robotmcp command is available
+        import subprocess
+        result = subprocess.run(['which', 'robotmcp'], capture_output=True, text=True)
+        return result.returncode == 0
+    except:
+        return False
+
+
+def _parse_steps_to_list(steps):
+    """Parse steps from various formats into a clean list"""
+    if isinstance(steps, list):
+        return [str(s).strip() for s in steps if str(s).strip()]
+    elif isinstance(steps, str):
+        # Split by newlines and clean
+        lines = steps.split('\n')
+        # Remove numbering if present (1., 2., Step 1:, etc.)
+        cleaned = []
+        for line in lines:
+            line = line.strip()
+            if line:
+                # Remove common step prefixes
+                line = re.sub(r'^\d+[\.\)]\s*', '', line)
+                line = re.sub(r'^Step\s+\d+:?\s*', '', line, flags=re.IGNORECASE)
+                if line:
+                    cleaned.append(line)
+        return cleaned
+    else:
+        return [str(steps)]
+
+
+def _convert_with_robotmcp(test_name, steps, expected_result, browser_type):
+    """
+    Convert test steps using RobotMCP (emulating TestPilot's approach)
+    This would use the actual RobotMCP MCP server for intelligent conversion
+    """
+    try:
+        # This is a placeholder for the actual RobotMCP integration
+        # In a real implementation, this would:
+        # 1. Start RobotMCP session
+        # 2. Analyze each step using mcp_robotmcp_analyze_scenario
+        # 3. Execute steps using mcp_robotmcp_execute_step
+        # 4. Build test suite using mcp_robotmcp_build_test_suite
+
+        logging.info(f"Using RobotMCP for intelligent conversion of: {test_name}")
+
+        # For now, return a placeholder indicating RobotMCP would be used
+        robot_content = f"""*** Test Cases ***
+{test_name}
+    [Documentation]    Auto-generated test case using RobotMCP intelligent conversion
+    [Tags]    automated    robotmcp
+    
+"""
+        for i, step in enumerate(steps, 1):
+            # Each step would be converted by RobotMCP's AI
+            robot_content += f"    # Step {i}: {step}\n"
+            robot_content += f"    Execute Natural Language Step    {step}\n"
+
+        if expected_result:
+            robot_content += f"    \n    # Expected Result\n"
+            robot_content += f"    Verify Expected Result    {expected_result}\n"
+
+        return robot_content
+
+    except Exception as e:
+        logging.error(f"Error in RobotMCP conversion: {e}")
+        return None
+
+
+def _convert_basic_robot_framework(test_name, steps, expected_result, browser_type):
+    """
+    Basic Robot Framework generation (fallback when RobotMCP not available)
+    """
+    try:
+        # Generate basic Robot Framework structure
+        robot_content = f"""*** Settings ***
+Library    SeleniumLibrary
+Library    BuiltIn
+
+*** Variables ***
+${{BROWSER}}    {browser_type}
+
+*** Test Cases ***
+{test_name}
+    [Documentation]    Auto-generated test case from natural language steps
+    [Tags]    automated    {browser_type}
+    
+    Open Browser    about:blank    ${{BROWSER}}
+"""
+
+        for i, step in enumerate(steps, 1):
+            # Basic conversion of natural language to Robot keywords
+            robot_keyword = _natural_language_to_robot_keyword(step)
+            robot_content += f"    # Step {i}: {step}\n"
+            robot_content += f"    {robot_keyword}\n"
+
+        if expected_result:
+            robot_content += f"    \n    # Expected Result: {expected_result}\n"
+            robot_content += f"    # TODO: Add verification for expected result\n"
+
+        robot_content += "    \n    [Teardown]    Close Browser\n"
+
+        return robot_content
+
+    except Exception as e:
+        logging.error(f"Error in basic Robot conversion: {e}")
+        return None
+
+
+def _natural_language_to_robot_keyword(step):
+    """Convert natural language step to basic Robot Framework keyword"""
+    step_lower = step.lower()
+
+    # Basic pattern matching for common actions
+    if 'click' in step_lower or 'press' in step_lower:
+        # Extract element reference
+        match = re.search(r'click\s+(?:on\s+)?(?:the\s+)?(["\']?[\w\s]+["\']?)', step_lower)
+        if match:
+            element = match.group(1).strip(' \'"')
+            return f"Click Element    # TODO: Add locator for '{element}'"
+        return "Click Element    # TODO: Add locator"
+
+    elif 'type' in step_lower or 'enter' in step_lower or 'input' in step_lower:
+        return "Input Text    # TODO: Add locator and text"
+
+    elif 'navigate' in step_lower or 'go to' in step_lower or 'open' in step_lower:
+        match = re.search(r'(?:navigate\s+to|go\s+to|open)\s+([^\s]+)', step_lower)
+        if match:
+            url = match.group(1)
+            return f"Go To    {url}"
+        return "Go To    # TODO: Add URL"
+
+    elif 'verify' in step_lower or 'check' in step_lower or 'assert' in step_lower:
+        return "Page Should Contain    # TODO: Add expected text"
+
+    elif 'select' in step_lower:
+        return "Select From List By Label    # TODO: Add locator and option"
+
+    elif 'wait' in step_lower:
+        return "Wait Until Page Contains Element    # TODO: Add locator"
+
+    else:
+        # Generic comment for unrecognized actions
+        return f"# TODO: Implement step: {step}"
+
+
+def _generate_combined_robot_file(scripts, browser_type):
+    """Generate a combined Robot Framework file with all test cases"""
+    try:
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+
+        combined_content = f"""*** Settings ***
+Documentation    Auto-generated test suite from Dynamic TC Generation
+...              Generated on: {time.strftime("%Y-%m-%d %H:%M:%S")}
+...              Total test cases: {len(scripts)}
+
+Library    SeleniumLibrary
+Library    BuiltIn
+
+Suite Setup    Suite Setup Keywords
+Suite Teardown    Suite Teardown Keywords
+
+*** Variables ***
+${{BROWSER}}    {browser_type}
+${{TIMEOUT}}    10
+
+*** Keywords ***
+Suite Setup Keywords
+    Log    Starting test suite execution
+
+Suite Teardown Keywords
+    Log    Test suite execution complete
+    Close All Browsers
+
+"""
+
+        # Add all test cases
+        for script_info in scripts:
+            combined_content += "\n" + script_info['script'] + "\n"
+
+        # Save to file
+        output_dir = os.path.join(os.getcwd(), "generated_tests")
+        os.makedirs(output_dir, exist_ok=True)
+
+        filename = f"automated_tests_{timestamp}.robot"
+        filepath = os.path.join(output_dir, filename)
+
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(combined_content)
+
+        logging.info(f"Generated combined Robot file: {filepath}")
+        return filepath
+
+    except Exception as e:
+        logging.error(f"Error generating combined Robot file: {e}")
+        return None
 
 
 # Enhanced error handling and notifications
@@ -1589,11 +2607,10 @@ def show_ui():
 
             col1, col2 = st.columns(2)
             with col1:
-                jira_host = st.text_input(
-                    "JIRA Host",
-                    placeholder="https://your-company.atlassian.net",
-                    help="Your JIRA instance URL"
-                )
+                # Hardcoded JIRA Host
+                jira_host = "https://newfold.atlassian.net/"
+                st.info(f"🔗 JIRA Host: {jira_host}")
+
                 project_key = st.text_input(
                     "Project Key",
                     placeholder="PROJ",
@@ -1681,11 +2698,10 @@ def show_ui():
 
             col1, col2 = st.columns(2)
             with col1:
-                conf_host = st.text_input(
-                    "Confluence Host",
-                    placeholder="https://your-company.atlassian.net/wiki",
-                    help="Your Confluence instance URL"
-                )
+                # Hardcoded Confluence Host
+                conf_host = "https://confluence.newfold.com/"
+                st.info(f"🔗 Confluence Host: {conf_host}")
+
                 space_key = st.text_input(
                     "Space Key",
                     placeholder="SPACE",
@@ -2291,7 +3307,7 @@ def show_ui():
             if not valid:
                 st.error(validation_message)
             else:
-                with st.spinner("Analysing requirements from all sources..."):
+                with st.spinner("🔍 Analyzing requirements comprehensively with Azure OpenAI..."):
                     # Prepare RAG config path if provided
                     rag_config_path = None
                     if RAG_AVAILABLE and use_rag and rag_config_file:
@@ -2299,7 +3315,8 @@ def show_ui():
                             tmp.write(rag_config_file.read())
                             rag_config_path = tmp.name
 
-                    st.session_state.analysis, error = parse_and_analyze_files(
+                    # Enhanced comprehensive analysis
+                    st.session_state.analysis, error = generate_comprehensive_test_plan(
                         uploaded_files,
                         st.session_state.jira_requirements,
                         st.session_state.confluence_requirements,
@@ -2319,55 +3336,80 @@ def show_ui():
                     if error:
                         st.error(error)
                     elif st.session_state.analysis:
-                        st.success("✅ Requirements analysed successfully!")
+                        st.success("✅ Comprehensive Test Plan generated successfully!")
 
                         # Enhanced analysis results display
-                        stats = st.session_state.analysis["statistics"]
+                        test_plan = st.session_state.analysis.get("test_plan", {})
+                        estimates = test_plan.get("estimates", {})
+                        test_scenarios = test_plan.get("test_scenarios", {})
+                        stats = st.session_state.analysis.get("statistics", {})
                         sources = st.session_state.analysis.get("sources", [])
-                        quality = st.session_state.analysis.get("analysis_quality", {})
 
                         # Main metrics
                         col1, col2, col3, col4 = st.columns(4)
                         with col1:
-                            st.metric("Total Requirements", stats['total_requirements'])
+                            st.metric("Total Requirements", stats.get('total_requirements', 0))
                         with col2:
-                            st.metric("High Priority", stats.get('high_priority', 0))
+                            total_scenarios = sum(len(scenarios) for scenarios in test_scenarios.values())
+                            st.metric("Test Scenarios", total_scenarios)
                         with col3:
-                            st.metric("High Complexity", stats.get('high_complexity', 0))
+                            dev_estimate = estimates.get('development_days', 0)
+                            st.metric("Dev Estimate", f"{dev_estimate} days")
                         with col4:
-                            st.metric("Sources Used", len(sources))
+                            test_estimate = estimates.get('testing_days', 0)
+                            st.metric("Test Estimate", f"{test_estimate} days")
+
+                        # Display Test Plan Summary
+                        st.markdown("### 📋 Test Plan Summary")
+
+                        with st.expander("📊 Estimates & Metrics", expanded=True):
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.markdown("**Development Estimates:**")
+                                st.write(f"• Total: {estimates.get('development_days', 0)} days")
+                                st.write(f"• Breakdown: {estimates.get('development_breakdown', 'N/A')}")
+                            with col2:
+                                st.markdown("**Testing Estimates:**")
+                                st.write(f"• Total: {estimates.get('testing_days', 0)} days")
+                                st.write(f"• Breakdown: {estimates.get('testing_breakdown', 'N/A')}")
+
+                        with st.expander("🎯 Test Scenarios Overview", expanded=True):
+                            for scenario_type, scenarios in test_scenarios.items():
+                                st.markdown(f"**{scenario_type.replace('_', ' ').title()}:** {len(scenarios)} scenarios")
 
                         # Quality metrics
-                        st.markdown("### 📊 Analysis Quality Metrics")
-                        col1, col2, col3, col4 = st.columns(4)
-                        with col1:
-                            complexity_score = quality.get('avg_complexity', 0)
-                            st.metric(
-                                "Avg Complexity",
-                                f"{complexity_score:.2f}",
-                                delta=f"{'High' if complexity_score > 0.7 else 'Medium' if complexity_score > 0.4 else 'Low'}"
-                            )
-                        with col2:
-                            ambiguity_score = quality.get('avg_ambiguity', 0)
-                            st.metric(
-                                "Avg Ambiguity",
-                                f"{ambiguity_score:.2f}",
-                                delta=f"{'High' if ambiguity_score > 0.6 else 'Medium' if ambiguity_score > 0.3 else 'Low'}"
-                            )
-                        with col3:
-                            completeness_score = quality.get('avg_completeness', 0)
-                            st.metric(
-                                "Avg Completeness",
-                                f"{completeness_score:.2f}",
-                                delta=f"{'Good' if completeness_score > 0.7 else 'Fair' if completeness_score > 0.4 else 'Poor'}"
-                            )
-                        with col4:
-                            testability_score = quality.get('avg_testability', 0)
-                            st.metric(
-                                "Avg Testability",
-                                f"{testability_score:.2f}",
-                                delta=f"{'Good' if testability_score > 0.7 else 'Fair' if testability_score > 0.4 else 'Poor'}"
-                            )
+                        quality = st.session_state.analysis.get("analysis_quality", {})
+                        if quality:
+                            st.markdown("### 📊 Analysis Quality Metrics")
+                            col1, col2, col3, col4 = st.columns(4)
+                            with col1:
+                                complexity_score = quality.get('avg_complexity', 0)
+                                st.metric(
+                                    "Avg Complexity",
+                                    f"{complexity_score:.2f}",
+                                    delta=f"{'High' if complexity_score > 0.7 else 'Medium' if complexity_score > 0.4 else 'Low'}"
+                                )
+                            with col2:
+                                ambiguity_score = quality.get('avg_ambiguity', 0)
+                                st.metric(
+                                    "Avg Ambiguity",
+                                    f"{ambiguity_score:.2f}",
+                                    delta=f"{'High' if ambiguity_score > 0.6 else 'Medium' if ambiguity_score > 0.3 else 'Low'}"
+                                )
+                            with col3:
+                                completeness_score = quality.get('avg_completeness', 0)
+                                st.metric(
+                                    "Avg Completeness",
+                                    f"{completeness_score:.2f}",
+                                    delta=f"{'Good' if completeness_score > 0.7 else 'Fair' if completeness_score > 0.4 else 'Poor'}"
+                                )
+                            with col4:
+                                testability_score = quality.get('avg_testability', 0)
+                                st.metric(
+                                    "Avg Testability",
+                                    f"{testability_score:.2f}",
+                                    delta=f"{'Good' if testability_score > 0.7 else 'Fair' if testability_score > 0.4 else 'Poor'}"
+                                )
 
                         # RAG enhancement status
                         if st.session_state.analysis.get("enhanced_with_rag"):

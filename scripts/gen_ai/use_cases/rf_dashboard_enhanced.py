@@ -34,9 +34,15 @@ from scipy import stats
 import warnings
 warnings.filterwarnings('ignore')
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Enhanced logging setup
+try:
+    from enhanced_logging import get_logger, EmojiIndicators, PerformanceTimer, ProgressTracker
+    logger = get_logger("RFDashboardEnhanced", level=logging.INFO, log_file="rf_dashboard_enhanced.log")
+except ImportError:
+    # Fallback to standard logging if enhanced_logging is not available
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+    print("Warning: Enhanced logging not available, using standard logging")
 
 # Ensure parent directory is in path
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

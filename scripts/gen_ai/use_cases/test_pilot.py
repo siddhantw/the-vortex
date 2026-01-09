@@ -72,13 +72,28 @@ for dir_path in [GEN_AI_DIR, SCRIPTS_DIR, ROOT_DIR]:
     if dir_path not in sys.path:
         sys.path.insert(0, dir_path)
 
-# Configure logging FIRST before it's used
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s | %(levelname)-8s | %(name)s | %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-logger = logging.getLogger('TestPilot')
+# Import enhanced logging
+try:
+    from enhanced_logging import get_logger, EmojiIndicators, PerformanceTimer, ProgressTracker
+    ENHANCED_LOGGING = True
+except ImportError:
+    try:
+        from gen_ai.use_cases.enhanced_logging import get_logger, EmojiIndicators, PerformanceTimer, ProgressTracker
+        ENHANCED_LOGGING = True
+    except ImportError:
+        # Fallback to standard logging
+        ENHANCED_LOGGING = False
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s | %(levelname)-8s | %(name)s | %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+
+# Create logger
+if ENHANCED_LOGGING:
+    logger = get_logger('TestPilot', level=logging.INFO, log_file='testpilot.log')
+else:
+    logger = logging.getLogger('TestPilot')
 
 # Import required modules
 AZURE_AVAILABLE = False
@@ -87,13 +102,19 @@ try:
     from azure_openai_client import AzureOpenAIClient as _AzureOpenAIClient
     AzureOpenAIClient = _AzureOpenAIClient
     AZURE_AVAILABLE = True
-    logger.info("✅ Azure OpenAI Client loaded successfully")
+    if ENHANCED_LOGGING:
+        logger.log_success("Azure OpenAI Client loaded successfully")
+    else:
+        logger.info("✅ Azure OpenAI Client loaded successfully")
 except ImportError:
     try:
         from gen_ai.azure_openai_client import AzureOpenAIClient as _AzureOpenAIClient
         AzureOpenAIClient = _AzureOpenAIClient
         AZURE_AVAILABLE = True
-        logger.info("✅ Azure OpenAI Client loaded successfully (alternate path)")
+        if ENHANCED_LOGGING:
+            logger.log_success("Azure OpenAI Client loaded successfully (alternate path)")
+        else:
+            logger.info("✅ Azure OpenAI Client loaded successfully (alternate path)")
     except ImportError:
         logger.warning("⚠️ Azure OpenAI Client not available - AI features will be disabled")
         # Fallback is already set to None above
@@ -262,14 +283,24 @@ try:
     except Exception as robotmcp_error:
         # robotmcp module has issues, but MCP client is available
         # We can still use it via the robotmcp command
-        logger.warning(f"⚠️ RobotMCP module import warning: {robotmcp_error}")
-        logger.info("ℹ️ Will attempt to use robotmcp via command-line interface")
-        ROBOTMCP_AVAILABLE = True  # Still try to use it via CLI
+        error_msg = str(robotmcp_error)
+        if "No module named 'robotmcp'" in error_msg:
+            logger.warning(f"⚠️ RobotMCP module not installed. Install with: pip install robotframework-mcp")
+            ROBOTMCP_AVAILABLE = False
+        else:
+            logger.warning(f"⚠️ RobotMCP module import warning: {error_msg}")
+            logger.info("ℹ️ Will attempt to use robotmcp via command-line interface")
+            ROBOTMCP_AVAILABLE = True  # Still try to use it via CLI
 except ImportError as e:
-    logger.info(f"⚠️ RobotMCP not available - install with: pip install robotmcp (Error: {e})")
+    error_detail = str(e)
+    if "No module named 'mcp'" in error_detail:
+        logger.info(f"ℹ️ MCP client not available - RobotMCP features will be disabled")
+    else:
+        logger.info(f"⚠️ RobotMCP not available - install with: pip install robotframework-mcp (Error: {error_detail})")
     ClientSession = None
     StdioServerParameters = None
     stdio_client = None
+    ROBOTMCP_AVAILABLE = False
 
 # Global cleanup registry for RobotMCP connections
 _robotmcp_instances = []
@@ -3574,7 +3605,7 @@ class BrowserAutomationManager:
             logger.info("🧠 BrowserAutomationManager: Locator learning system initialized")
         return self._locator_learner
 
-    def initialize_browser(self, base_url: str, headless: bool = False, environment: str = 'prod') -> bool:
+    def initialize_browser(self, base_url: str, headless: bool = False, environment: str = 'prod', browser: str = 'chrome') -> bool:
         """
         Initialize browser with logging capabilities and environment-specific configuration
 
@@ -3582,6 +3613,7 @@ class BrowserAutomationManager:
             base_url: Base URL to start from
             headless: Run in headless mode
             environment: Test environment (prod, qamain, stage, jarvisqa1, jarvisqa2)
+            browser: Browser to use (default: 'chrome') - can be set at runtime
 
         Returns:
             Success status
@@ -3606,7 +3638,6 @@ class BrowserAutomationManager:
                 from selenium import webdriver
                 from selenium.webdriver.chrome.options import Options
                 from selenium.webdriver.chrome.service import Service
-                from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
 
                 logger.info(f"🚀 Initializing browser (attempt {attempt}/{max_retries}) for: {base_url}")
 
@@ -3665,16 +3696,93 @@ class BrowserAutomationManager:
                 chrome_options.add_experimental_option('excludeSwitches', ['enable-automation', 'enable-logging'])
                 chrome_options.add_experimental_option('useAutomationExtension', False)
 
-                # Initialize driver with explicit service and increased timeout
-                try:
-                    service = Service()
-                    service.creation_flags = 0  # Prevent window creation on Windows
-                    self.driver = webdriver.Chrome(service=service, options=chrome_options)
-                    logger.info("   ✅ Chrome driver started with explicit service")
-                except Exception as service_error:
-                    logger.warning(f"   ⚠️ Service initialization failed: {service_error}, trying fallback...")
-                    self.driver = webdriver.Chrome(options=chrome_options)
-                    logger.info("   ✅ Chrome driver started with fallback method")
+                # Check for Selenium Grid URL from environment variable
+                selenium_grid_url = os.environ.get('SELENIUM_GRID_URL', None)
+
+                if selenium_grid_url:
+                    # Use Selenium Grid / Remote WebDriver (modern approach without deprecated DesiredCapabilities)
+                    logger.info(f"🌐 Selenium Grid URL detected: {selenium_grid_url}")
+                    logger.info(f"   🔗 Initiating connection to Selenium Grid...")
+                    logger.info(f"   🌐 Browser: {browser.upper()}")
+
+                    try:
+                        # Use modern Options objects instead of deprecated DesiredCapabilities
+                        if browser.lower() == 'firefox':
+                            from selenium.webdriver.firefox.options import Options as FirefoxOptions
+                            browser_options = FirefoxOptions()
+                            # Copy relevant Firefox options
+                            browser_options.add_argument('--no-sandbox')
+                            browser_options.add_argument('--disable-dev-shm-usage')
+                            if headless:
+                                browser_options.add_argument('--headless')
+
+                            # Apply environment-specific settings
+                            browser_options.set_preference('general.useragent.override', env_config["user_agent"])
+                            if env_config['proxy']:
+                                # Firefox proxy configuration
+                                proxy_parts = env_config['proxy'].replace('http://', '').replace('https://', '').split(':')
+                                browser_options.set_preference('network.proxy.type', 1)
+                                browser_options.set_preference('network.proxy.http', proxy_parts[0])
+                                browser_options.set_preference('network.proxy.http_port', int(proxy_parts[1]) if len(proxy_parts) > 1 else 80)
+                                browser_options.set_preference('network.proxy.ssl', proxy_parts[0])
+                                browser_options.set_preference('network.proxy.ssl_port', int(proxy_parts[1]) if len(proxy_parts) > 1 else 80)
+                                logger.info(f"   🔒 Firefox proxy configured: {env_config['proxy']}")
+
+                        elif browser.lower() == 'edge':
+                            from selenium.webdriver.edge.options import Options as EdgeOptions
+                            browser_options = EdgeOptions()
+                            # Copy relevant Edge options
+                            browser_options.add_argument('--no-sandbox')
+                            browser_options.add_argument('--disable-dev-shm-usage')
+                            browser_options.add_argument('--disable-gpu')
+                            if headless:
+                                browser_options.add_argument('--headless')
+
+                            # Apply environment-specific settings (Edge uses Chromium arguments)
+                            browser_options.add_argument(f'user-agent={env_config["user_agent"]}')
+                            if env_config['proxy']:
+                                browser_options.add_argument(f'--proxy-server={env_config["proxy"]}')
+                                logger.info(f"   🔒 Edge proxy configured: {env_config['proxy']}")
+
+                        else:
+                            # Chrome (default) - use the already configured chrome_options
+                            if browser.lower() not in ['chrome', 'chromium']:
+                                logger.warning(f"   ⚠️ Unknown browser '{browser}', defaulting to Chrome")
+                            browser_options = chrome_options
+
+                        # Create Remote WebDriver with Options (modern approach)
+                        self.driver = webdriver.Remote(
+                            command_executor=selenium_grid_url,
+                            options=browser_options
+                        )
+                        logger.info(f"   ✅ Successfully connected to Selenium Grid at {selenium_grid_url}")
+                        logger.info(f"   ✅ Remote {browser.upper()} driver initialized")
+                    except Exception as grid_error:
+                        logger.error(f"   ❌ Failed to connect to Selenium Grid: {grid_error}")
+                        raise grid_error
+                else:
+                    # Local execution with webdriver-manager
+                    logger.info(f"   💻 Local execution mode - using webdriver-manager")
+                    logger.info(f"   🌐 Browser: {browser.upper()}")
+
+                    # Initialize driver with explicit service and increased timeout
+                    try:
+                        from webdriver_manager.chrome import ChromeDriverManager
+                        service = Service(ChromeDriverManager().install())
+                        service.creation_flags = 0  # Prevent window creation on Windows
+                        self.driver = webdriver.Chrome(service=service, options=chrome_options)
+                        logger.info("   ✅ Chrome driver started with webdriver-manager service")
+                    except Exception as service_error:
+                        logger.warning(f"   ⚠️ Service initialization failed: {service_error}, trying fallback...")
+                        try:
+                            service = Service()
+                            service.creation_flags = 0  # Prevent window creation on Windows
+                            self.driver = webdriver.Chrome(service=service, options=chrome_options)
+                            logger.info("   ✅ Chrome driver started with explicit service")
+                        except Exception as fallback_error:
+                            logger.warning(f"   ⚠️ Explicit service failed: {fallback_error}, trying basic initialization...")
+                            self.driver = webdriver.Chrome(options=chrome_options)
+                            logger.info("   ✅ Chrome driver started with fallback method")
 
                 # Set optimized timeouts
                 self.driver.set_page_load_timeout(60)  # Keep 60s for slow pages
@@ -4518,13 +4626,15 @@ class BrowserAutomationManager:
             for attr in ['data-testid', 'data-test', 'data-qa', 'data-cy', 'data-test-id', 'data-element-label']:
                 data_value = safe_get_attribute(attr)
                 if data_value:
-                    locators_found.append((attr, f"css:[{attr}='{data_value}']", 3))
+                    # Use double quotes in CSS selector to avoid quote conflicts
+                    locators_found.append((attr, f'css:[{attr}="{data_value}"]', 3))
                     break
 
             # Priority 4: Aria-label (accessibility)
             aria_label = safe_get_attribute('aria-label')
             if aria_label and len(aria_label) < 100:
-                locators_found.append(('aria-label', f"css:[aria-label='{aria_label}']", 4))
+                # Use double quotes in CSS selector to avoid quote conflicts
+                locators_found.append(('aria-label', f'css:[aria-label="{aria_label}"]', 4))
 
             # Priority 5: Text content (for links and buttons)
             element_text = safe_get_text()
@@ -8814,13 +8924,41 @@ class TestPilotEngine:
             chrome_options.add_experimental_option('excludeSwitches', ['enable-automation', 'enable-logging'])
             chrome_options.add_experimental_option('useAutomationExtension', False)
 
-            # Initialize with Service for better error handling
-            try:
-                from selenium.webdriver.chrome.service import Service
-                service = Service()
-                driver = webdriver.Chrome(service=service, options=chrome_options)
-            except Exception:
-                driver = webdriver.Chrome(options=chrome_options)
+            # Check for Selenium Grid (Jenkins environment)
+            selenium_grid_url = os.environ.get('SELENIUM_GRID_URL', None)
+
+            if selenium_grid_url:
+                # Remote execution via Selenium Grid
+                logger.info(f"   🔗 Selenium Grid URL detected: {selenium_grid_url}")
+                logger.info(f"   🌐 Using Selenium Grid for scraping (Jenkins mode)")
+                try:
+                    driver = webdriver.Remote(
+                        command_executor=selenium_grid_url,
+                        options=chrome_options
+                    )
+                    logger.info(f"   ✅ Successfully connected to Selenium Grid at {selenium_grid_url}")
+                except Exception as grid_error:
+                    logger.error(f"   ❌ Failed to connect to Selenium Grid: {grid_error}")
+                    raise grid_error
+            else:
+                # Local execution with webdriver-manager
+                logger.info(f"   💻 Local execution mode - using webdriver-manager for scraping")
+                try:
+                    from selenium.webdriver.chrome.service import Service
+                    from webdriver_manager.chrome import ChromeDriverManager
+                    service = Service(ChromeDriverManager().install())
+                    driver = webdriver.Chrome(service=service, options=chrome_options)
+                    logger.info("   ✅ Chrome driver started with webdriver-manager service")
+                except Exception as wdm_error:
+                    logger.warning(f"   ⚠️ webdriver-manager failed: {wdm_error}, trying fallback...")
+                    try:
+                        from selenium.webdriver.chrome.service import Service
+                        service = Service()
+                        driver = webdriver.Chrome(service=service, options=chrome_options)
+                        logger.info("   ✅ Chrome driver started with explicit service")
+                    except Exception:
+                        driver = webdriver.Chrome(options=chrome_options)
+                        logger.info("   ✅ Chrome driver started with fallback method")
 
             driver.set_page_load_timeout(60)  # Increased from 30 to 60
             driver.set_script_timeout(30)
@@ -9310,7 +9448,8 @@ class TestPilotEngine:
         base_url: str,
         headless: bool = True,
         environment: str = 'prod',
-        use_robotmcp: bool = False
+        use_robotmcp: bool = False,
+        browser: str = 'chrome'
     ) -> Tuple[bool, str, str, str]:
         """
         Enhanced script generation with live browser automation
@@ -9328,6 +9467,7 @@ class TestPilotEngine:
             headless: Run browser in headless mode
             environment: Target environment (prod, qamain, stage, jarvisqa1, jarvisqa2)
             use_robotmcp: Use RobotMCP for advanced automation
+            browser: Browser to use (default: 'chrome') - can be set at runtime
 
         Returns:
             Tuple of (success, script_content, file_path, bug_report)
@@ -9343,7 +9483,7 @@ class TestPilotEngine:
             browser_mgr.filled_forms.clear()
             logger.info("   ♻️  Reset form tracking for new test case")
 
-            if not browser_mgr.initialize_browser(base_url, headless, environment):
+            if not browser_mgr.initialize_browser(base_url, headless, environment, browser):
                 return False, "", "", "Failed to initialize browser"
 
             # Execute each step with browser automation
@@ -9556,10 +9696,24 @@ class TestPilotEngine:
             Tuple of (success, enhanced_test_case, message)
         """
         if not self.azure_client or not self.azure_client.is_configured():
+            logger.error(f"{EmojiIndicators.ERROR if ENHANCED_LOGGING else '❌'} Azure OpenAI client not configured")
             return False, test_case, "Azure OpenAI client not configured"
 
         try:
+            if ENHANCED_LOGGING:
+                logger.start_operation("AI Step Analysis",
+                                     test_case=test_case.title,
+                                     steps=len(test_case.steps),
+                                     robotmcp=use_robotmcp)
+            else:
+                logger.info(f"🧠 Starting AI analysis for test case: {test_case.title} ({len(test_case.steps)} steps)")
+
             # Prepare prompt with architecture context
+            if ENHANCED_LOGGING:
+                logger.log_step(1, 3, "Preparing analysis prompt with architecture context")
+            else:
+                logger.info("📝 Preparing analysis prompt...")
+
             prompt = self._create_analysis_prompt(test_case)
 
             messages = [
@@ -9582,6 +9736,12 @@ Here is the architecture context to consider: {self.architecture_context}
                 }
             ]
 
+            if ENHANCED_LOGGING:
+                logger.log_step(2, 3, "Calling Azure OpenAI for analysis")
+                logger.log_ai_operation("Analyze Test Steps", model="Azure OpenAI")
+            else:
+                logger.info("🤖 Calling Azure OpenAI for analysis...")
+
             response = track_ai_call(
                 self.azure_client,
                 operation='analyze_test_steps',
@@ -9592,15 +9752,31 @@ Here is the architecture context to consider: {self.architecture_context}
             )
 
             # Parse AI response
+            if ENHANCED_LOGGING:
+                logger.log_step(3, 3, "Parsing AI analysis results")
+            else:
+                logger.info("📊 Parsing AI response...")
+
             ai_analysis = response['choices'][0]['message']['content']
 
             # Update test case with AI analysis
             enhanced_test_case = self._parse_ai_analysis(test_case, ai_analysis)
 
+            if ENHANCED_LOGGING:
+                logger.complete_operation("AI Step Analysis",
+                                        analyzed_steps=len(enhanced_test_case.steps),
+                                        success=True)
+            else:
+                logger.info(f"✅ Steps analyzed successfully")
+
             return True, enhanced_test_case, "Steps analyzed successfully"
 
         except Exception as e:
-            logger.error(f"Error analyzing steps: {str(e)}")
+            if ENHANCED_LOGGING:
+                logger.log_failure(f"AI analysis failed: {str(e)}")
+                logger.exception("Full traceback for AI analysis error")
+            else:
+                logger.error(f"❌ Error analyzing steps: {str(e)}")
             return False, test_case, f"Error: {str(e)}"
 
     def _create_analysis_prompt(self, test_case: TestCase) -> str:
@@ -9996,16 +10172,54 @@ Return the analysis now.
             Tuple of (success, script_content, file_path)
         """
         try:
+            if ENHANCED_LOGGING:
+                logger.start_operation("Robot Script Generation",
+                                     test_case=test_case.title,
+                                     steps=len(test_case.steps),
+                                     comments=include_comments)
+            else:
+                logger.info(f"🚀 Generating Robot Framework script for: {test_case.title}")
+
             # Determine if this is UI or API test
+            if ENHANCED_LOGGING:
+                logger.log_step(1, 6, "Detecting test type (UI/API)")
+            else:
+                logger.info("🔍 Detecting test type...")
+
             is_ui_test = self._is_ui_test(test_case)
+            test_type = "UI" if is_ui_test else "API"
+
+            if ENHANCED_LOGGING:
+                logger.info(f"{EmojiIndicators.INFO} Test type detected: {test_type}")
+            else:
+                logger.info(f"✓ Test type: {test_type}")
 
             # Determine brand from source or default to 'generated'
             brand = test_case.metadata.get('brand', 'generated')
+            if ENHANCED_LOGGING:
+                logger.info(f"{EmojiIndicators.INFO} Brand: {brand}")
+            else:
+                logger.info(f"🏷️ Brand: {brand}")
 
             # Detect appropriate subdirectory/flow for brand-specific organization
+            if ENHANCED_LOGGING:
+                logger.log_step(2, 6, "Detecting flow subdirectory for organization")
+            else:
+                logger.info("📂 Detecting flow subdirectory...")
+
             flow_subdir = self._detect_flow_subdirectory(test_case, brand)
+            if flow_subdir:
+                if ENHANCED_LOGGING:
+                    logger.info(f"{EmojiIndicators.FOLDER} Flow subdirectory: {flow_subdir}")
+                else:
+                    logger.info(f"✓ Flow subdirectory: {flow_subdir}")
 
             # Generate test suite file
+            if ENHANCED_LOGGING:
+                logger.log_step(3, 6, f"Generating {test_type} test suite")
+            else:
+                logger.info(f"📝 Generating {test_type} test suite...")
+
             if is_ui_test:
                 suite_content = self._generate_ui_suite(test_case, include_comments, flow_subdir)
                 if flow_subdir:
@@ -10019,6 +10233,11 @@ Return the analysis now.
             os.makedirs(suite_dir, exist_ok=True)
 
             # Generate keyword file
+            if ENHANCED_LOGGING:
+                logger.log_step(4, 6, "Generating keyword file")
+            else:
+                logger.info("🔑 Generating keyword file...")
+
             if is_ui_test:
                 keyword_content = self._generate_ui_keyword_file(test_case, include_comments, flow_subdir)
                 if flow_subdir:
@@ -10032,6 +10251,11 @@ Return the analysis now.
             os.makedirs(keyword_dir, exist_ok=True)
 
             # Generate locator file
+            if ENHANCED_LOGGING:
+                logger.log_step(5, 6, "Generating locator and variable files")
+            else:
+                logger.info("📍 Generating locator file...")
+
             locator_content = self._generate_locator_file(test_case)
             if flow_subdir:
                 locator_dir = os.path.join(ROOT_DIR, "tests", "locators", "ui" if is_ui_test else "api", brand, flow_subdir)
@@ -10053,25 +10277,58 @@ Return the analysis now.
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
             # Save files
+            if ENHANCED_LOGGING:
+                logger.log_step(6, 6, "Saving generated files")
+            else:
+                logger.info("💾 Saving files...")
+
             suite_filename = f"{safe_name}.robot"
             suite_path = os.path.join(suite_dir, suite_filename)
             with open(suite_path, 'w') as f:
                 f.write(suite_content)
+
+            if ENHANCED_LOGGING:
+                logger.log_file_operation("Created", suite_path)
+            else:
+                logger.info(f"✓ Suite: {suite_path}")
 
             keyword_filename = f"{safe_name}.robot"
             keyword_path = os.path.join(keyword_dir, keyword_filename)
             with open(keyword_path, 'w') as f:
                 f.write(keyword_content)
 
+            if ENHANCED_LOGGING:
+                logger.log_file_operation("Created", keyword_path)
+            else:
+                logger.info(f"✓ Keywords: {keyword_path}")
+
             locator_filename = f"{safe_name}.py"
             locator_path = os.path.join(locator_dir, locator_filename)
             with open(locator_path, 'w') as f:
                 f.write(locator_content)
 
+            if ENHANCED_LOGGING:
+                logger.log_file_operation("Created", locator_path)
+            else:
+                logger.info(f"✓ Locators: {locator_path}")
+
             variable_filename = f"{safe_name}.py"
             variable_path = os.path.join(variable_dir, variable_filename)
             with open(variable_path, 'w') as f:
                 f.write(variable_content)
+
+            if ENHANCED_LOGGING:
+                logger.log_file_operation("Created", variable_path)
+            else:
+                logger.info(f"✓ Variables: {variable_path}")
+
+            if ENHANCED_LOGGING:
+                logger.complete_operation("Robot Script Generation",
+                                        files_created=4,
+                                        suite=suite_path)
+                logger.log_success(f"Generated complete test suite with {len(test_case.steps)} steps")
+            else:
+                logger.info(f"🎉 Successfully generated Robot Framework scripts!")
 
             # Create summary content with all file paths
             summary = f"""# TestPilot Generated Test Suite
@@ -10485,15 +10742,21 @@ This matches the pattern used in tests like:
 
             # Priority 1: Use reused locator from repository (pre-validated)
             if status == 'REUSED' and actual_value:
-                lines.append(f"{locator_name} = '{actual_value}'  # ♻️ REUSED from existing repository - PRE-VALIDATED")
+                # Properly escape single quotes to avoid syntax errors
+                escaped_value = actual_value.replace("'", "\\'") if actual_value else actual_value
+                lines.append(f"{locator_name} = '{escaped_value}'  # ♻️ REUSED from existing repository - PRE-VALIDATED")
                 logger.info(f"   ♻️ Using REUSED locator for {locator_name}: {actual_value}")
             # Priority 2: Use captured locator from browser automation (most reliable)
             elif captured_value := find_captured_locator(locator_name, i - 1):
-                lines.append(f"{locator_name} = '{captured_value}'  # ✅ CAPTURED during browser automation - VERIFIED WORKING")
+                # Properly escape single quotes to avoid syntax errors
+                escaped_value = captured_value.replace("'", "\\'") if captured_value else captured_value
+                lines.append(f"{locator_name} = '{escaped_value}'  # ✅ CAPTURED during browser automation - VERIFIED WORKING")
                 logger.info(f"   ✅ Using CAPTURED locator for {locator_name}: {captured_value}")
             # Priority 3: Use auto-detected value from web scraping
             elif actual_value:
-                lines.append(f"{locator_name} = '{actual_value}'  # AUTO-DETECTED from website")
+                # Properly escape single quotes to avoid syntax errors
+                escaped_value = actual_value.replace("'", "\\'") if actual_value else actual_value
+                lines.append(f"{locator_name} = '{escaped_value}'  # AUTO-DETECTED from website")
                 lines.append(f"# ✓ Found automatically - please verify this works")
             # Priority 4: Placeholder that needs manual update
             else:
@@ -10544,6 +10807,49 @@ This matches the pattern used in tests like:
 
         return "\n".join(lines)
 
+    def _detect_brand_from_test_case(self, test_case: TestCase) -> str:
+        """
+        Detect brand from test case metadata or steps.
+        Used for setting brand-specific Selenium Grid configuration.
+
+        Note: Brand fetching is simplified - defaults to 'bhcom' as it won't matter for most cases.
+
+        Args:
+            test_case: TestCase object with metadata and steps
+
+        Returns:
+            Brand code ('bhcom', 'ncom', 'hg', etc.) or 'bhcom' as default
+        """
+        # Priority 1: Check test case metadata
+        if 'brand' in test_case.metadata:
+            return test_case.metadata['brand']
+
+        # Priority 2: Extract from URL in test steps
+        for step in test_case.steps:
+            desc_lower = step.description.lower()
+
+            # Check for URLs or brand-specific keywords
+            if 'bluehost.com' in desc_lower or 'bluehost' in desc_lower or 'bhcom' in desc_lower:
+                return 'bhcom'
+            elif 'networksolutions.com' in desc_lower or 'network solutions' in desc_lower or 'ncom' in desc_lower:
+                return 'ncom'
+            elif 'hostgator' in desc_lower or 'hg.com' in desc_lower or 'hostgator.com' in desc_lower:
+                return 'hg'
+
+        # Priority 3: Check test title and description
+        combined_text = f"{test_case.title} {test_case.description}".lower()
+
+        if 'bluehost' in combined_text or 'bhcom' in combined_text:
+            return 'bhcom'
+        elif 'network solutions' in combined_text or 'ncom' in combined_text:
+            return 'ncom'
+        elif 'hostgator' in combined_text or 'hostgator' in combined_text:
+            return 'hg'
+
+        # Default: bhcom (most common)
+        logger.info("ℹ️ Brand not detected, defaulting to 'bhcom'")
+        return 'bhcom'
+
     def _generate_variable_file(self, test_case: TestCase) -> str:
         """Generate Python variable file following repo patterns"""
         lines = []
@@ -10561,6 +10867,38 @@ This matches the pattern used in tests like:
         lines.append("# - Flags: with_new_domain_variable = 'with_new_domain'")
         lines.append("# - TLD: tld_dot_com_variable = '.com'")
         lines.append("")
+
+        # Add Selenium Grid / Remote WebDriver configuration
+        lines.append("# " + "="*70)
+        lines.append("# SELENIUM GRID / DEVICE FARM CONFIGURATION:")
+        lines.append("# " + "="*70)
+        lines.append("# This variable supports both local and Jenkins/CI execution")
+        lines.append("# - Local: Uses webdriver-manager (variable should be None)")
+        lines.append("# - Jenkins/CI: Uses Selenium Grid hub URL from environment variable")
+        lines.append("")
+
+        # Detect brand from test case metadata or steps
+        brand = self._detect_brand_from_test_case(test_case)
+
+        # Get runtime Selenium Grid URL from environment (for Jenkins)
+        selenium_grid_url = os.environ.get('SELENIUM_GRID_URL', None)
+
+        if selenium_grid_url:
+            # Jenkins/CI mode: Use the Selenium Grid URL
+            lines.append(f"# Running in Jenkins/CI mode with Selenium Grid")
+            lines.append(f"{brand}_HOST_URL = '{selenium_grid_url}'  # Selenium Grid Hub URL")
+            logger.info(f"✅ Using Selenium Grid URL for {brand}: {selenium_grid_url}")
+        else:
+            # Local mode: Set to None to use webdriver-manager
+            lines.append(f"# Running in local mode - webdriver-manager will be used")
+            lines.append(f"{brand}_HOST_URL = None  # Local execution uses webdriver-manager")
+            logger.info(f"ℹ️ Local mode: {brand}_HOST_URL set to None (webdriver-manager)")
+
+        lines.append("")
+        lines.append("# To override for Jenkins/CI, set environment variable:")
+        lines.append("# export SELENIUM_GRID_URL='http://localhost:4444/wd/hub'")
+        lines.append("")
+
         lines.append("# " + "="*70)
         lines.append("# TEST-SPECIFIC VARIABLES:")
         lines.append("# " + "="*70)
@@ -10571,8 +10909,10 @@ This matches the pattern used in tests like:
         if captured_variables:
             logger.info(f"✅ Using {len(captured_variables)} CAPTURED variables from browser automation")
             for var_name, var_value in captured_variables.items():
+                # Properly escape single quotes in the value to avoid syntax errors
+                escaped_value = var_value.replace("'", "\\'") if var_value else var_value
                 lines.append(f"# Captured from browser automation")
-                lines.append(f"{var_name} = '{var_value}'  # ✅ CAPTURED during execution")
+                lines.append(f"{var_name} = '{escaped_value}'  # ✅ CAPTURED during execution")
                 lines.append("")
 
         # Extract variables from steps
@@ -10582,8 +10922,10 @@ This matches the pattern used in tests like:
             for var_name, var_desc, default_value in variables:
                 # Skip if already captured
                 if var_name not in captured_variables:
+                    # Properly escape single quotes in the value to avoid syntax errors
+                    escaped_value = default_value.replace("'", "\\'") if default_value else default_value
                     lines.append(f"# {var_desc}")
-                    lines.append(f"{var_name} = '{default_value}'")
+                    lines.append(f"{var_name} = '{escaped_value}'")
                     lines.append("")
 
         # Add common repo variables that are frequently used
@@ -12171,6 +12513,8 @@ Return only the step descriptions, one per line, without numbering."""
         st.session_state.test_pilot_saved_templates = {}
     if 'test_pilot_step_history' not in st.session_state:
         st.session_state.test_pilot_step_history = []
+    if 'template_library_expanded' not in st.session_state:
+        st.session_state.template_library_expanded = False
 
     # RobotMCP connection status tracking
     if 'robotmcp_prewarming_started' not in st.session_state:
@@ -12290,7 +12634,6 @@ Return only the step descriptions, one per line, without numbering."""
 
     # Main tabs for different input methods
     tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
-        "📊 Executive Summary",
         "📝 Manual Entry",
         "🎫 Jira/Zephyr",
         "📤 Upload Recording",
@@ -12300,7 +12643,8 @@ Return only the step descriptions, one per line, without numbering."""
         "🎯 Module Usage",
         "🤖 AI Performance",
         "📊 Historical Trends",
-        "💰 ROI Dashboard"
+        "💰 ROI Dashboard",
+        "📊 Executive Summary"
     ])
 
     # Initialize Azure client
@@ -12316,289 +12660,13 @@ Return only the step descriptions, one per line, without numbering."""
 
     engine = st.session_state.test_pilot_engine
 
-    # Tab 0: Executive Summary
+    # Tab 0: Manual Entry
     with tab0:
-        st.markdown("### 📊 Executive Summary")
-        st.markdown("**Comprehensive business metrics and KPIs for executive review**")
-        st.markdown("---")
-
-        # Time range selector
-        col1, col2, col3 = st.columns([2, 1, 1])
-        with col1:
-            exec_days_filter = st.selectbox(
-                "Reporting Period",
-                options=[7, 14, 30, 60, 90, 180, 365],
-                index=2,  # Default to 30 days
-                format_func=lambda x: f"Last {x} days",
-                key="exec_summary_days"
-            )
-        with col2:
-            if st.button("🔄 Refresh", use_container_width=True, key="exec_refresh"):
-                st.rerun()
-        with col3:
-            # Export button placeholder
-            pass
-
-        with st.spinner("Loading executive metrics..."):
-            exec_summary = TestPilotAnalytics.get_executive_summary(days=exec_days_filter)
-
-        # Health Status Banner
-        health_status = exec_summary['health_status']
-        roi_status = exec_summary['roi_status']
-
-        if health_status == 'Excellent' and roi_status == 'Positive':
-            st.success(f"✅ **System Health: {health_status}** | **ROI: {roi_status}** ({exec_summary['roi_percentage']:.1f}%)")
-        elif health_status in ['Good', 'Fair'] or roi_status == 'Break-even':
-            st.info(f"ℹ️ **System Health: {health_status}** | **ROI: {roi_status}** ({exec_summary['roi_percentage']:.1f}%)")
-        else:
-            st.warning(f"⚠️ **System Health: {health_status}** | **ROI: {roi_status}** - Needs attention")
-
-        st.markdown("---")
-
-        # Key Business Metrics - Top Row
-        st.markdown("#### 💎 Key Performance Indicators")
-
-        col1, col2, col3, col4, col5 = st.columns(5)
-
-        with col1:
-            st.metric(
-                "Test Scripts Generated",
-                f"{exec_summary['total_scripts_generated']:,}",
-                help="Total successful test scripts generated"
-            )
-
-        with col2:
-            st.metric(
-                "Success Rate",
-                f"{exec_summary['success_rate']:.1f}%",
-                help="Percentage of successful generations"
-            )
-
-        with col3:
-            st.metric(
-                "Quality Score",
-                f"{exec_summary['overall_quality_score']:.1f}/100",
-                help="Overall quality score (success rate + reliability + consistency)"
-            )
-
-        with col4:
-            st.metric(
-                "Net ROI",
-                f"${exec_summary['net_roi_usd']:,.2f}",
-                delta=f"{exec_summary['roi_percentage']:.1f}% ROI",
-                help="Total labor savings minus AI costs"
-            )
-
-        with col5:
-            st.metric(
-                "Active Users",
-                exec_summary['active_users'],
-                delta=exec_summary['adoption_status'],
-                help="Unique users in the reporting period"
-            )
-
-        st.markdown("---")
-
-        # Financial Metrics
-        st.markdown("#### 💰 Financial Analysis")
-
-        col1, col2, col3, col4 = st.columns(4)
-
-        with col1:
-            st.metric(
-                "Labor Savings",
-                f"${exec_summary['total_labor_savings_usd']:,.2f}",
-                help="Estimated labor cost savings from automation"
-            )
-
-        with col2:
-            st.metric(
-                "AI Costs",
-                f"${exec_summary['total_ai_cost_usd']:.2f}",
-                help="Total AI API costs"
-            )
-
-        with col3:
-            st.metric(
-                "Cost per Script",
-                f"${exec_summary['cost_per_script_usd']:.4f}",
-                help="Average AI cost per generated script"
-            )
-
-        with col4:
-            st.metric(
-                "Value per Script",
-                f"${exec_summary['value_per_script_usd']:.2f}",
-                help="Average labor savings per script"
-            )
-
-        st.markdown("---")
-
-        # Efficiency Metrics
-        st.markdown("#### ⚡ Efficiency & Performance")
-
-        col1, col2, col3, col4 = st.columns(4)
-
-        with col1:
-            st.metric(
-                "Time Saved",
-                f"{exec_summary['time_saved_hours']:.1f} hrs",
-                help="Total time saved vs. manual test creation"
-            )
-
-        with col2:
-            st.metric(
-                "Productivity Gain",
-                f"{exec_summary['productivity_multiplier']:.1f}x",
-                help="Productivity multiplier vs. manual approach"
-            )
-
-        with col3:
-            st.metric(
-                "Avg Generation Time",
-                f"{exec_summary['avg_generation_time_seconds']:.2f}s",
-                help="Average time to generate a script"
-            )
-
-        with col4:
-            st.metric(
-                "Total Test Steps",
-                f"{exec_summary['total_test_steps']:,}",
-                help="Total test steps generated across all scripts"
-            )
-
-        st.markdown("---")
-
-        # Quality & Reliability Metrics
-        st.markdown("#### ✨ Quality & Reliability")
-
-        col1, col2, col3, col4 = st.columns(4)
-
-        with col1:
-            reliability_color = "🟢" if exec_summary['reliability_score'] >= 90 else "🟡" if exec_summary['reliability_score'] >= 75 else "🔴"
-            st.metric(
-                "Reliability Score",
-                f"{reliability_color} {exec_summary['reliability_score']:.1f}%",
-                help="System reliability (100% - error rate)"
-            )
-
-        with col2:
-            consistency_color = "🟢" if exec_summary['consistency_score'] >= 80 else "🟡" if exec_summary['consistency_score'] >= 60 else "🔴"
-            st.metric(
-                "Consistency Score",
-                f"{consistency_color} {exec_summary['consistency_score']:.1f}",
-                help="Script consistency score"
-            )
-
-        with col3:
-            st.metric(
-                "Error Rate",
-                f"{exec_summary['error_rate']:.2f}%",
-                delta=f"Reliability: {exec_summary['reliability_score']:.1f}%",
-                delta_color="normal",
-                help="Percentage of operations that failed"
-            )
-
-        with col4:
-            st.metric(
-                "Template Reuse Rate",
-                f"{exec_summary['template_reuse_rate']:.1f}%",
-                help="Efficiency of template reuse"
-            )
-
-        st.markdown("---")
-
-        # AI Performance Metrics
-        st.markdown("#### 🤖 AI Performance")
-
-        col1, col2, col3, col4 = st.columns(4)
-
-        with col1:
-            st.metric(
-                "Total AI Calls",
-                f"{exec_summary['total_ai_calls']:,}",
-                help="Total AI API interactions"
-            )
-
-        with col2:
-            st.metric(
-                "AI Success Rate",
-                f"{exec_summary['ai_success_rate']:.1f}%",
-                help="Percentage of successful AI calls"
-            )
-
-        with col3:
-            st.metric(
-                "Tokens Used",
-                f"{exec_summary['total_tokens_used']:,}",
-                help="Total tokens consumed"
-            )
-
-        with col4:
-            st.metric(
-                "Avg Response Time",
-                f"{exec_summary['avg_response_time_seconds']:.2f}s",
-                help="Average AI response time"
-            )
-
-        st.markdown("---")
-
-        # Assumptions & Methodology
-        with st.expander("📋 Methodology & Assumptions", expanded=False):
-            st.markdown("#### Calculation Assumptions")
-
-            assumptions = exec_summary.get('assumptions', {})
-
-            col1, col2, col3 = st.columns(3)
-
-            with col1:
-                st.markdown("**Time Assumptions**")
-                st.write(f"• Manual test time: {assumptions.get('manual_time_mins', 30)} mins")
-                st.write(f"• Automated time: {assumptions.get('auto_time_mins', 2):.2f} mins")
-
-            with col2:
-                st.markdown("**Cost Assumptions**")
-                st.write(f"• QA hourly rate: ${assumptions.get('hourly_rate_usd', 50)}/hr")
-                st.write(f"• AI pricing: GPT-4.1-mini")
-
-            with col3:
-                st.markdown("**Quality Metrics**")
-                st.write("• Success Rate: 40% weight")
-                st.write("• Reliability: 40% weight")
-                st.write("• Consistency: 20% weight")
-
-            st.markdown("---")
-            st.markdown("#### Report Details")
-            st.write(f"• **Reporting Period:** {exec_summary['reporting_period_days']} days")
-            st.write(f"• **Generated At:** {exec_summary['generated_at']}")
-            st.write(f"• **Health Status:** {exec_summary['health_status']}")
-            st.write(f"• **ROI Status:** {exec_summary['roi_status']}")
-
-        # Export Options
-        st.markdown("---")
-        col1, col2 = st.columns(2)
-
-        with col1:
-            # Create JSON export (json already imported at module level)
-            summary_json = json.dumps(exec_summary, indent=2, default=str)
-            st.download_button(
-                label="📥 Download Executive Summary (JSON)",
-                data=summary_json,
-                file_name=f"executive_summary_{datetime.now().strftime('%Y%m%d')}.json",
-                mime="application/json",
-                use_container_width=True
-            )
-
-        with col2:
-            st.info("💡 For detailed breakdowns, explore the other tabs: Analytics, AI Performance, ROI Dashboard, etc.")
-
-    # Tab 1: Manual Entry
-    with tab1:
         st.markdown("### 📝 Enter Test Steps Manually")
         st.markdown("Enter your test steps in natural language, one per line.")
 
         # Template Management Section
-        with st.expander("📚 Template Library & Quick Actions", expanded=False):
+        with st.expander("📚 Template Library & Quick Actions", expanded=st.session_state.template_library_expanded):
             # Add reload button at the top
             col_reload1, col_reload2 = st.columns([3, 1])
             with col_reload1:
@@ -12609,6 +12677,8 @@ Return only the step descriptions, one per line, without numbering."""
                     st.session_state.test_pilot_saved_templates.clear()
                     # Reload from disk
                     load_templates_from_disk()
+                    # Keep expander open after reload
+                    st.session_state.template_library_expanded = True
                     st.rerun()
 
             st.markdown("---")
@@ -12674,6 +12744,8 @@ Return only the step descriptions, one per line, without numbering."""
                                 TestPilotAnalytics.track_template_action('save', save_template_name, category)
                             else:
                                 st.error(f"❌ {message}")
+                            # Keep expander open after save
+                            st.session_state.template_library_expanded = True
                             st.rerun()
                         else:
                             st.error("Please enter a template name")
@@ -12777,11 +12849,17 @@ Return only the step descriptions, one per line, without numbering."""
                     else:
                         template_options.sort()
 
+                    # Callback to keep expander open when template is selected
+                    def on_template_select():
+                        if st.session_state.selected_template:
+                            st.session_state.template_library_expanded = True
+
                     selected_template = st.selectbox(
                         "Select Template",
                         [""] + template_options,
                         key="selected_template",
-                        format_func=lambda x: f"{x}" if x else "Choose a template..."
+                        format_func=lambda x: f"{x}" if x else "Choose a template...",
+                        on_change=on_template_select
                     )
 
                     # Show template info
@@ -12818,6 +12896,8 @@ Return only the step descriptions, one per line, without numbering."""
                                     st.session_state.manual_tags = template.get('tags', '')
                                     st.session_state.test_pilot_steps = template.get('steps', []).copy()
                                     st.success(f"✅ Loaded '{selected_template}' (used {template.get('usage_count', 0)} times)")
+                                    # Keep expander open after load
+                                    st.session_state.template_library_expanded = True
                                     st.rerun()
                             else:
                                 st.warning("Please select a template")
@@ -12845,6 +12925,8 @@ Return only the step descriptions, one per line, without numbering."""
                                     st.success(f"✅ {message}")
                                 else:
                                     st.error(f"❌ {message}")
+                                # Keep expander open after delete
+                                st.session_state.template_library_expanded = True
                                 st.rerun()
                             else:
                                 st.warning("Please select a template")
@@ -13245,15 +13327,13 @@ Return only the step descriptions, one per line, without numbering."""
                                             with st.form("jira_auth_inline_form"):
                                                 col1, col2 = st.columns(2)
                                                 with col1:
-                                                    jira_host = st.text_input(
-                                                        "Jira Host",
-                                                        value="https://jira.newfold.com",
-                                                        placeholder="https://your-jira-instance.com",
-                                                        help="Your Jira instance URL"
-                                                    )
+                                                    # Hardcoded Jira Host
+                                                    jira_host = "https://newfold.atlassian.net/"
+                                                    st.info(f"🔗 Jira Host: {jira_host}")
+
                                                     jira_username = st.text_input(
                                                         "Username",
-                                                        placeholder="your.email@company.com"
+                                                        placeholder="firstname.lastname@newfold.com"
                                                     )
                                                 with col2:
                                                     jira_api_token = st.text_input(
@@ -13542,8 +13622,8 @@ Return only the step descriptions, one per line, without numbering."""
                             st.error(f"❌ Error generating script: {str(e)}")
                             st.exception(e)
 
-    # Tab 2: Jira/Zephyr Integration
-    with tab2:
+    # Tab 1: Jira/Zephyr Integration
+    with tab1:
         st.markdown("### Fetch Test Cases from Jira/Zephyr")
 
         # Authentication section
@@ -13551,10 +13631,10 @@ Return only the step descriptions, one per line, without numbering."""
             col1, col2 = st.columns(2)
 
             with col1:
-                jira_host = st.text_input("Jira Host",
-                                         value="https://jira.newfold.com",
-                                         placeholder="https://jira.newfold.com",
-                                         key="jira_host")
+                # Hardcoded Jira Host
+                jira_host = "https://newfold.atlassian.net/"
+                st.info(f"🔗 Jira Host: {jira_host}")
+
                 jira_username = st.text_input("Username/Email", key="jira_username")
 
             with col2:
@@ -13809,8 +13889,8 @@ Return only the step descriptions, one per line, without numbering."""
                 # Clear the trigger
                 st.session_state.test_pilot_generate_triggered = False
 
-    # Tab 3: Upload Recording
-    with tab3:
+    # Tab 2: Upload Recording
+    with tab2:
         st.markdown("### Upload Recording JSON")
         st.markdown("Upload a recording file from browser automation tools")
 
@@ -14008,8 +14088,8 @@ Return only the step descriptions, one per line, without numbering."""
             except Exception as e:
                 st.error(f"Error processing recording file: {str(e)}")
 
-    # Tab 4: Record & Playback
-    with tab4:
+    # Tab 3: Record & Playback
+    with tab3:
         st.markdown("### ⏺️ Record & Playback")
         st.markdown("Record your browser actions in real-time and automatically generate test scripts with AI analysis")
 
@@ -15293,8 +15373,8 @@ Return only the step descriptions, one per line, without numbering."""
         # If no match, return title-cased version of the code
         return brand_code.title() if brand_code else 'Unknown'
 
-    # Tab 5: Generated Scripts
-    with tab5:
+    # Tab 4: Generated Scripts
+    with tab4:
         st.markdown("### 📊 Generated Scripts Repository")
         st.markdown("Browse and manage all TestPilot-generated Robot Framework test scripts")
 
@@ -15508,8 +15588,8 @@ Return only the step descriptions, one per line, without numbering."""
                 Once generated, scripts will appear here automatically.
                 """)
 
-    # Tab 6: Analytics & Metrics
-    with tab6:
+    # Tab 5: Analytics & Metrics
+    with tab5:
         st.markdown("### 📈 Analytics & Metrics Overview")
         st.markdown("Real-time usage statistics and performance metrics")
 
@@ -15852,8 +15932,8 @@ Return only the step descriptions, one per line, without numbering."""
         else:
             st.info("Period comparison requires more historical data. Keep using TestPilot to enable trend analysis.")
 
-    # Tab 7: Module Usage
-    with tab7:
+    # Tab 6: Module Usage
+    with tab6:
         st.markdown("### 🎯 Module Usage Statistics")
         st.markdown("Detailed breakdown of feature usage and engagement")
 
@@ -15942,8 +16022,8 @@ Return only the step descriptions, one per line, without numbering."""
                 with col2:
                     st.metric("", f"{count} ({percentage:.1f}%)")
 
-    # Tab 8: AI Performance
-    with tab8:
+    # Tab 7: AI Performance
+    with tab7:
         st.markdown("### 🤖 AI Performance Metrics")
         st.markdown("Azure OpenAI model performance and token usage analytics")
 
@@ -16442,8 +16522,8 @@ Return only the step descriptions, one per line, without numbering."""
         else:
             st.info("🤖 No AI performance data available yet. Use AI-powered features to see metrics here.")
 
-    # Tab 9: Historical Trends
-    with tab9:
+    # Tab 8: Historical Trends
+    with tab8:
         st.markdown("### 📊 Historical Trends & Patterns")
         st.markdown("Time-based analysis and trend visualization")
 
@@ -16584,8 +16664,8 @@ Return only the step descriptions, one per line, without numbering."""
                     generations = week_data.get('generations', 0)
                     st.metric("Script Generations", generations)
 
-    # Tab 10: ROI Dashboard
-    with tab10:
+    # Tab 9: ROI Dashboard
+    with tab9:
         st.markdown("### 💰 ROI & Value Dashboard")
         st.markdown("Measure business value, time savings, and return on investment")
 
@@ -16847,6 +16927,282 @@ Return only the step descriptions, one per line, without numbering."""
                 mime="application/json",
                 use_container_width=True
             )
+
+    # Tab 10: Executive Summary
+    with tab10:
+        st.markdown("### 📊 Executive Summary")
+        st.markdown("**Comprehensive business metrics and KPIs for executive review**")
+        st.markdown("---")
+
+        # Time range selector
+        col1, col2, col3 = st.columns([2, 1, 1])
+        with col1:
+            exec_days_filter = st.selectbox(
+                "Reporting Period",
+                options=[7, 14, 30, 60, 90, 180, 365],
+                index=2,  # Default to 30 days
+                format_func=lambda x: f"Last {x} days",
+                key="exec_summary_days"
+            )
+        with col2:
+            if st.button("🔄 Refresh", use_container_width=True, key="exec_refresh"):
+                st.rerun()
+        with col3:
+            # Export button placeholder
+            pass
+
+        with st.spinner("Loading executive metrics..."):
+            exec_summary = TestPilotAnalytics.get_executive_summary(days=exec_days_filter)
+
+        # Health Status Banner
+        health_status = exec_summary['health_status']
+        roi_status = exec_summary['roi_status']
+
+        if health_status == 'Excellent' and roi_status == 'Positive':
+            st.success(f"✅ **System Health: {health_status}** | **ROI: {roi_status}** ({exec_summary['roi_percentage']:.1f}%)")
+        elif health_status in ['Good', 'Fair'] or roi_status == 'Break-even':
+            st.info(f"ℹ️ **System Health: {health_status}** | **ROI: {roi_status}** ({exec_summary['roi_percentage']:.1f}%)")
+        else:
+            st.warning(f"⚠️ **System Health: {health_status}** | **ROI: {roi_status}** - Needs attention")
+
+        st.markdown("---")
+
+        # Key Business Metrics - Top Row
+        st.markdown("#### 💎 Key Performance Indicators")
+
+        col1, col2, col3, col4, col5 = st.columns(5)
+
+        with col1:
+            st.metric(
+                "Test Scripts Generated",
+                f"{exec_summary['total_scripts_generated']:,}",
+                help="Total successful test scripts generated"
+            )
+
+        with col2:
+            st.metric(
+                "Success Rate",
+                f"{exec_summary['success_rate']:.1f}%",
+                help="Percentage of successful generations"
+            )
+
+        with col3:
+            st.metric(
+                "Quality Score",
+                f"{exec_summary['overall_quality_score']:.1f}/100",
+                help="Overall quality score (success rate + reliability + consistency)"
+            )
+
+        with col4:
+            st.metric(
+                "Net ROI",
+                f"${exec_summary['net_roi_usd']:,.2f}",
+                delta=f"{exec_summary['roi_percentage']:.1f}% ROI",
+                help="Total labor savings minus AI costs"
+            )
+
+        with col5:
+            st.metric(
+                "Active Users",
+                exec_summary['active_users'],
+                delta=exec_summary['adoption_status'],
+                help="Unique users in the reporting period"
+            )
+
+        st.markdown("---")
+
+        # Financial Metrics
+        st.markdown("#### 💰 Financial Analysis")
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            st.metric(
+                "Labor Savings",
+                f"${exec_summary['total_labor_savings_usd']:,.2f}",
+                help="Estimated labor cost savings from automation"
+            )
+
+        with col2:
+            st.metric(
+                "AI Costs",
+                f"${exec_summary['total_ai_cost_usd']:.2f}",
+                help="Total AI API costs"
+            )
+
+        with col3:
+            st.metric(
+                "Cost per Script",
+                f"${exec_summary['cost_per_script_usd']:.4f}",
+                help="Average AI cost per generated script"
+            )
+
+        with col4:
+            st.metric(
+                "Value per Script",
+                f"${exec_summary['value_per_script_usd']:.2f}",
+                help="Average labor savings per script"
+            )
+
+        st.markdown("---")
+
+        # Efficiency Metrics
+        st.markdown("#### ⚡ Efficiency & Performance")
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            st.metric(
+                "Time Saved",
+                f"{exec_summary['time_saved_hours']:.1f} hrs",
+                help="Total time saved vs. manual test creation"
+            )
+
+        with col2:
+            st.metric(
+                "Productivity Gain",
+                f"{exec_summary['productivity_multiplier']:.1f}x",
+                help="Productivity multiplier vs. manual approach"
+            )
+
+        with col3:
+            st.metric(
+                "Avg Generation Time",
+                f"{exec_summary['avg_generation_time_seconds']:.2f}s",
+                help="Average time to generate a script"
+            )
+
+        with col4:
+            st.metric(
+                "Total Test Steps",
+                f"{exec_summary['total_test_steps']:,}",
+                help="Total test steps generated across all scripts"
+            )
+
+        st.markdown("---")
+
+        # Quality & Reliability Metrics
+        st.markdown("#### ✨ Quality & Reliability")
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            reliability_color = "🟢" if exec_summary['reliability_score'] >= 90 else "🟡" if exec_summary['reliability_score'] >= 75 else "🔴"
+            st.metric(
+                "Reliability Score",
+                f"{reliability_color} {exec_summary['reliability_score']:.1f}%",
+                help="System reliability (100% - error rate)"
+            )
+
+        with col2:
+            consistency_color = "🟢" if exec_summary['consistency_score'] >= 80 else "🟡" if exec_summary['consistency_score'] >= 60 else "🔴"
+            st.metric(
+                "Consistency Score",
+                f"{consistency_color} {exec_summary['consistency_score']:.1f}",
+                help="Script consistency score"
+            )
+
+        with col3:
+            st.metric(
+                "Error Rate",
+                f"{exec_summary['error_rate']:.2f}%",
+                delta=f"Reliability: {exec_summary['reliability_score']:.1f}%",
+                delta_color="normal",
+                help="Percentage of operations that failed"
+            )
+
+        with col4:
+            st.metric(
+                "Template Reuse Rate",
+                f"{exec_summary['template_reuse_rate']:.1f}%",
+                help="Efficiency of template reuse"
+            )
+
+        st.markdown("---")
+
+        # AI Performance Metrics
+        st.markdown("#### 🤖 AI Performance")
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            st.metric(
+                "Total AI Calls",
+                f"{exec_summary['total_ai_calls']:,}",
+                help="Total AI API interactions"
+            )
+
+        with col2:
+            st.metric(
+                "AI Success Rate",
+                f"{exec_summary['ai_success_rate']:.1f}%",
+                help="Percentage of successful AI calls"
+            )
+
+        with col3:
+            st.metric(
+                "Tokens Used",
+                f"{exec_summary['total_tokens_used']:,}",
+                help="Total tokens consumed"
+            )
+
+        with col4:
+            st.metric(
+                "Avg Response Time",
+                f"{exec_summary['avg_response_time_seconds']:.2f}s",
+                help="Average AI response time"
+            )
+
+        st.markdown("---")
+
+        # Assumptions & Methodology
+        with st.expander("📋 Methodology & Assumptions", expanded=False):
+            st.markdown("#### Calculation Assumptions")
+
+            assumptions = exec_summary.get('assumptions', {})
+
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                st.markdown("**Time Assumptions**")
+                st.write(f"• Manual test time: {assumptions.get('manual_time_mins', 30)} mins")
+                st.write(f"• Automated time: {assumptions.get('auto_time_mins', 2):.2f} mins")
+
+            with col2:
+                st.markdown("**Cost Assumptions**")
+                st.write(f"• QA hourly rate: ${assumptions.get('hourly_rate_usd', 50)}/hr")
+                st.write(f"• AI pricing: GPT-4.1-mini")
+
+            with col3:
+                st.markdown("**Quality Metrics**")
+                st.write("• Success Rate: 40% weight")
+                st.write("• Reliability: 40% weight")
+                st.write("• Consistency: 20% weight")
+
+            st.markdown("---")
+            st.markdown("#### Report Details")
+            st.write(f"• **Reporting Period:** {exec_summary['reporting_period_days']} days")
+            st.write(f"• **Generated At:** {exec_summary['generated_at']}")
+            st.write(f"• **Health Status:** {exec_summary['health_status']}")
+            st.write(f"• **ROI Status:** {exec_summary['roi_status']}")
+
+        # Export Options
+        st.markdown("---")
+        col1, col2 = st.columns(2)
+
+        with col1:
+            # Create JSON export (json already imported at module level)
+            summary_json = json.dumps(exec_summary, indent=2, default=str)
+            st.download_button(
+                label="📥 Download Executive Summary (JSON)",
+                data=summary_json,
+                file_name=f"executive_summary_{datetime.now().strftime('%Y%m%d')}.json",
+                mime="application/json",
+                use_container_width=True
+            )
+
+        with col2:
+            st.info("💡 For detailed breakdowns, explore the other tabs: Analytics, AI Performance, ROI Dashboard, etc.")
 
 
 # Main entry point

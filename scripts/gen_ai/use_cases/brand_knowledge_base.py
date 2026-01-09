@@ -762,7 +762,7 @@ def detect_brand_from_url(url: str) -> str:
         url: The URL to analyze
 
     Returns:
-        Brand name ('bluehost', 'network_solutions', or 'unknown')
+        Brand code for folder structure ('bhcom' for Bluehost, 'ncom' for Network Solutions, or 'unknown')
     """
     import re
 
@@ -771,6 +771,11 @@ def detect_brand_from_url(url: str) -> str:
     for brand, patterns in BRAND_DETECTION_PATTERNS["url_patterns"].items():
         for pattern in patterns:
             if re.search(pattern, url_lower):
+                # Return the proper folder code instead of generic brand name
+                if brand == "bluehost":
+                    return "bhcom"
+                elif brand == "network_solutions":
+                    return "ncom"
                 return brand
 
     return "unknown"

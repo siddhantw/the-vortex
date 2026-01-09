@@ -93,17 +93,22 @@ try:
 except ImportError:
     TRANSFORMERS_AVAILABLE = False
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("smart_cx_navigator.log"),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger("SmartCXNavigator")
-
+# Configure logging with enhanced features
+try:
+    from enhanced_logging import get_logger, EmojiIndicators, PerformanceTimer, ProgressTracker
+    logger = get_logger("SmartCXNavigator", level=logging.INFO, log_file="smart_cx_navigator.log")
+    ENHANCED_LOGGING = True
+except ImportError:
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler("smart_cx_navigator.log"),
+            logging.StreamHandler()
+        ]
+    )
+    logger = logging.getLogger("SmartCXNavigator")
+    ENHANCED_LOGGING = False
 # Constants
 MODULE_NAME = "smart_cx_navigator"
 AI_ANALYSIS_CONFIDENCE_THRESHOLD = 0.8
@@ -895,13 +900,24 @@ class SmartWebCrawler:
 
         try:
             chrome_options = Options()
-            chrome_options.add_argument("--headless")
+            chrome_options.add_argument("--headless=new")  # Use new headless mode
             chrome_options.add_argument("--no-sandbox")
             chrome_options.add_argument("--disable-dev-shm-usage")
+            chrome_options.add_argument("--disable-gpu")
             chrome_options.add_argument(f"--user-agent={self.config.user_agent}")
 
-            self.selenium_driver = webdriver.Chrome(options=chrome_options)
-            logger.info("Selenium WebDriver initialized successfully")
+            # Try to use webdriver-manager for automatic ChromeDriver management
+            try:
+                from selenium.webdriver.chrome.service import Service
+                from webdriver_manager.chrome import ChromeDriverManager
+                service = Service(ChromeDriverManager().install())
+                self.selenium_driver = webdriver.Chrome(service=service, options=chrome_options)
+                logger.info("Selenium WebDriver initialized with webdriver-manager")
+            except Exception as wdm_error:
+                logger.warning(f"webdriver-manager failed: {wdm_error}, trying fallback...")
+                self.selenium_driver = webdriver.Chrome(options=chrome_options)
+                logger.info("Selenium WebDriver initialized with fallback method")
+
             return True
         except Exception as e:
             logger.error(f"Failed to initialize Selenium: {e}")

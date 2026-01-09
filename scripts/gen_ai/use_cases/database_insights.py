@@ -50,9 +50,16 @@ try:
 except ImportError:
     MSSQL_AVAILABLE = False
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Configure logging with enhanced features
+try:
+    from enhanced_logging import get_logger, EmojiIndicators, PerformanceTimer, ProgressTracker
+    logger = get_logger("DatabaseInsights", level=logging.INFO, log_file="database_insights.log")
+    ENHANCED_LOGGING = True
+except ImportError:
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+    ENHANCED_LOGGING = False
+
 
 class DatabaseAnalyzer:
     """Advanced database analysis and insights generator"""

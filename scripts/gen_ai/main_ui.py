@@ -5,6 +5,23 @@ import os
 import json
 from datetime import datetime
 import pandas as pd
+import logging
+
+# Enhanced logging setup (before page config)
+try:
+    # Add the use_cases directory to path for enhanced_logging import
+    script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    use_cases_dir = os.path.join(script_dir, "gen_ai", "use_cases")
+    if use_cases_dir not in sys.path:
+        sys.path.insert(0, use_cases_dir)
+
+    from enhanced_logging import get_logger, EmojiIndicators, PerformanceTimer, ProgressTracker
+    logger = get_logger("MainUI", level=logging.INFO, log_file="main_ui.log")
+except ImportError:
+    # Fallback to standard logging if enhanced_logging is not available
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+    print("Warning: Enhanced logging not available, using standard logging")
 
 # Configure the page to use wide mode and set a nice title
 # This MUST be the first Streamlit command
@@ -12,7 +29,7 @@ st.set_page_config(
     page_title="The Vortex - Gen AI Testing Portal",
     page_icon="🧠",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
 # Safely import optional dependencies
@@ -32,6 +49,44 @@ except ImportError:
 script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if script_dir not in sys.path:
     sys.path.append(script_dir)
+
+# ============================================================================
+# AUTHENTICATION & AUTHORIZATION SYSTEM
+# ============================================================================
+try:
+    from gen_ai.auth.user_manager import UserManager
+    from gen_ai.auth.audit_logger import AuditLogger, AuditAction, AuditSeverity
+    from gen_ai.auth.auth_manager import AuthManager, StreamlitAuthManager
+    from gen_ai.auth.rbac_config import Permission, SYSTEM_ROLES
+    from gen_ai.auth.login_ui import render_login_page, render_password_change_form, render_user_profile
+    from gen_ai.auth.admin_panel import render_admin_panel
+
+    # Initialize auth components (singleton pattern)
+    if 'auth_initialized' not in st.session_state:
+        auth_dir = os.path.join(script_dir, "gen_ai", "auth")
+        user_manager = UserManager(storage_path=os.path.join(auth_dir, "users.json"))
+        audit_logger = AuditLogger(log_path=os.path.join(auth_dir, "audit_logs.jsonl"))
+        auth_manager = AuthManager(user_manager, audit_logger)
+        st_auth = StreamlitAuthManager(auth_manager)
+
+        # Store in session state
+        st.session_state.user_manager = user_manager
+        st.session_state.audit_logger = audit_logger
+        st.session_state.auth_manager = auth_manager
+        st.session_state.st_auth = st_auth
+        st.session_state.auth_initialized = True
+    else:
+        # Retrieve from session state
+        st_auth = st.session_state.st_auth
+
+    AUTH_ENABLED = True
+except ImportError as e:
+    st.warning(f"""
+    ⚠️ Authentication system not fully initialized. 
+    Some features may be limited. Error: {str(e)}
+    """)
+    AUTH_ENABLED = False
+    st_auth = None
 
 # Apply custom CSS for modern Newfold Digital branding
 st.markdown("""
@@ -80,12 +135,59 @@ header {visibility: hidden;}
 
 /* Main app container */
 .main .block-container {
-    padding: 2rem 3rem;
-    max-width: 1400px;
+    padding: 0 2rem 2rem 2rem !important;
+    max-width: 1600px;
     margin: 0 auto;
-    background: var(--background-primary);
+    background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
     border-radius: var(--border-radius-xl);
     box-shadow: var(--shadow-sm);
+}
+
+/* Improve overall spacing */
+.element-container {
+    margin-bottom: 0.75rem;
+}
+
+/* Better section dividers */
+hr {
+    border: none;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, #e2e8f0, transparent);
+    margin: 1.5rem 0;
+}
+
+/* Remove excessive top spacing from Streamlit */
+.main > div:first-child {
+    padding-top: 0 !important;
+    margin-top: 0 !important;
+}
+
+.main {
+    padding-top: 0 !important;
+}
+
+/* Compact header spacing */
+div[data-testid="stVerticalBlock"] > div:first-child {
+    padding-top: 0 !important;
+    margin-top: 0 !important;
+}
+
+/* Remove top padding from all Streamlit containers */
+section.main > div {
+    padding-top: 0 !important;
+}
+
+.stApp {
+    padding-top: 0 !important;
+}
+
+/* Force content to top */
+.block-container {
+    padding-top: 0 !important;
+}
+
+div[data-testid="stAppViewContainer"] > section {
+    padding-top: 0 !important;
 }
 
 /* Enhanced header with glassmorphism effect */
@@ -210,13 +312,121 @@ div[data-testid="stSelectbox"] > div > div > div > div:hover {
     color: var(--text-primary) !important;
 }
 
+/* Remove spacing between expander sections */
+div[data-testid="stExpander"] {
+    margin-bottom: 0 !important;
+}
+
+div.streamlit-expanderHeader {
+    margin-bottom: 0 !important;
+}
+
+section.main > div > div > div > div {
+    gap: 0 !important;
+}
+
+/* Reduce spacing after expanders */
+.element-container:has(div[data-testid="stExpander"]) {
+    margin-bottom: 0 !important;
+}
+
 /* Navigation container with improved grid */
 .nav-container {
-    padding: 0.1rem;
-    background: rgba(248, 250, 252, 0.8);
+    padding: 0.5rem;
+    background: linear-gradient(135deg, rgba(248, 250, 252, 0.9), rgba(241, 245, 249, 0.9));
     border-radius: var(--border-radius-xl);
     border: 1px solid var(--border-color);
     backdrop-filter: blur(10px);
+    margin-bottom: 2rem;
+}
+
+/* Modern module card styling */
+.module-card {
+    background: white;
+    border: 2px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 16px;
+    cursor: pointer;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    height: 180px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    position: relative;
+    overflow: hidden;
+}
+
+.module-card:hover {
+    transform: translateY(-8px) scale(1.02);
+    box-shadow: 0 12px 24px rgba(236, 83, 40, 0.2);
+    border-color: #EC5328;
+}
+
+.module-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(236, 83, 40, 0.1), transparent);
+    transition: left 0.5s;
+}
+
+.module-card:hover::before {
+    left: 100%;
+}
+
+/* Active module card */
+.module-card-active {
+    background: linear-gradient(135deg, #EC5328 0%, #ff6b6b 100%);
+    border: 3px solid #EC5328;
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 16px;
+    cursor: pointer;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 8px 16px rgba(236, 83, 40, 0.3);
+    height: 180px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    position: relative;
+    overflow: hidden;
+    animation: pulseGlow 2s ease-in-out infinite;
+}
+
+@keyframes pulseGlow {
+    0%, 100% {
+        box-shadow: 0 8px 16px rgba(236, 83, 40, 0.3);
+    }
+    50% {
+        box-shadow: 0 12px 24px rgba(236, 83, 40, 0.5);
+    }
+}
+
+.module-card-active:hover {
+    transform: translateY(-8px) scale(1.02);
+    box-shadow: 0 16px 32px rgba(236, 83, 40, 0.4);
+}
+
+/* Category header styling */
+.nav-container h3 {
+    font-family: 'Inter', sans-serif;
+    font-weight: 700;
+    font-size: 1.5rem;
+    color: var(--text-primary);
+    margin-bottom: 1.5rem;
+    margin-top: 1.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.nav-container h3:first-child {
+    margin-top: 0;
 }
 
 /* Add hover effect for use case modules */
@@ -526,8 +736,8 @@ button:focus, select:focus, input:focus, textarea:focus {
 
 /* Scrollbar styling */
 ::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    width: 10px;
+    height: 10px;
 }
 
 ::-webkit-scrollbar-track {
@@ -536,12 +746,84 @@ button:focus, select:focus, input:focus, textarea:focus {
 }
 
 ::-webkit-scrollbar-thumb {
-    background: var(--primary-color);
+    background: linear-gradient(135deg, #EC5328, #ff6b6b);
     border-radius: var(--border-radius-md);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-    background: var(--primary-dark);
+    background: linear-gradient(135deg, #d64520, #ff5555);
+}
+
+/* Smooth scroll behavior */
+html {
+    scroll-behavior: smooth;
+}
+
+/* Loading indicator */
+.loading-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(255, 255, 255, 0.9);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 9999;
+}
+
+/* Scroll to top button */
+.scroll-to-top {
+    position: fixed;
+    bottom: 2rem;
+    right: 2rem;
+    background: linear-gradient(135deg, #EC5328, #ff6b6b);
+    color: white;
+    width: 50px;
+    height: 50px;
+    border-radius: 50%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: 1.5rem;
+    box-shadow: 0 4px 12px rgba(236, 83, 40, 0.4);
+    cursor: pointer;
+    transition: all 0.3s ease;
+    z-index: 1000;
+}
+
+.scroll-to-top:hover {
+    transform: translateY(-5px) scale(1.1);
+    box-shadow: 0 8px 20px rgba(236, 83, 40, 0.6);
+}
+
+/* Enhanced tooltips */
+[data-tooltip] {
+    position: relative;
+    cursor: help;
+}
+
+[data-tooltip]::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%) translateY(-8px);
+    background: #1e293b;
+    color: white;
+    padding: 0.5rem 1rem;
+    border-radius: 8px;
+    font-size: 0.875rem;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s ease;
+    z-index: 1000;
+}
+
+[data-tooltip]:hover::after {
+    opacity: 1;
 }
 
 /* Animation keyframes */
@@ -1146,6 +1428,26 @@ def add_notification(module_name, status, message, details=None, action_steps=No
     st.session_state.notification_count += 1
     st.session_state.unread_notifications += 1
 
+    # Play notification sound if enabled
+    if st.session_state.get('notification_sound', False):
+        try:
+            # Play sound using HTML5 audio
+            sound_html = """
+            <audio autoplay>
+                <source src="data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjiR1/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+DyvmwhBTCO1/LGdiQFJnvK79uSQwoXZLbp7qNUFApJoOLyxG4gBTKQ2fLJeCQEJ3zL79+TPwsYZ7nq76ZYFgxLouPztmcgBTCS2PLLeyUGKH7N8N+UP
+QsZabzr8KpbFwxNo+T0u2sgBTOU2vLNfSYGK4DQ8eGWPwsbbr3s8K5eFw5OpuX1wmwiBTSX2/LPgCcHLIHT8uGYQAwccr/t8bBgGA9PqOb2xG8jBTeX3PLS" type="audio/wav">
+            </audio>
+            """
+            # Use a more compatible notification sound
+            st.markdown(sound_html, unsafe_allow_html=True)
+        except Exception as e:
+            # Silently fail if sound cannot be played
+            pass
+
+    # Auto-show notifications if enabled
+    if st.session_state.get('auto_notifications', True):
+        st.session_state.show_notifications = True
+
     # Store notifications to file for persistence
     try:
         notifications_file = os.path.join(script_dir, "gen_ai", "notifications.json")
@@ -1282,6 +1584,48 @@ if 'feedback_submitted' not in st.session_state:
 if 'feedback_data' not in st.session_state:
     st.session_state.feedback_data = []
 
+# ============================================================================
+# AUTHENTICATION & AUTHORIZATION CHECK
+# ============================================================================
+if AUTH_ENABLED and st_auth:
+    import logging
+
+    # Check if user is authenticated
+    is_auth = st_auth.is_authenticated()
+    logging.info(f"🔐 Authentication check: is_authenticated={is_auth}, session_id={st.session_state.get('auth_session_id')}")
+
+    if not is_auth:
+        logging.info("❌ User not authenticated - showing login page")
+        # Show login page
+        render_login_page(st_auth)
+        st.stop()
+
+    logging.info("✅ User authenticated successfully")
+
+    # Check if password change is required
+    if st.session_state.get('force_password_change', False):
+        logging.info("🔑 Password change required - showing password change form")
+        render_password_change_form(st_auth)
+        st.stop()
+
+    # Get current user for use throughout the app
+    current_user = st_auth.get_current_user()
+    logging.info(f"👤 Current user: {current_user.username if current_user else 'None'}")
+
+    # Session cleanup (remove expired sessions)
+    if 'last_session_cleanup' not in st.session_state:
+        st.session_state.last_session_cleanup = datetime.now()
+
+    # Cleanup every 5 minutes
+    if (datetime.now() - st.session_state.last_session_cleanup).seconds > 300:
+        st.session_state.auth_manager.cleanup_sessions()
+        st.session_state.last_session_cleanup = datetime.now()
+else:
+    # Auth disabled - use demo mode
+    current_user = None
+    import logging
+    logging.info("🔓 Authentication disabled - demo mode")
+
 # Check if we have a pending module selection from navigation that needs to be saved to history
 if 'pending_history_module' in st.session_state and st.session_state.pending_history_module:
     # This means a navigation happened but history wasn't saved yet
@@ -1289,459 +1633,313 @@ if 'pending_history_module' in st.session_state and st.session_state.pending_his
     if module_to_save != st.session_state.last_saved_module:
         save_usage_history(module_to_save)
 
-# ============================================================================
-# 🚀 ROBOTMCP GLOBAL INITIALIZATION (Available to all modules)
-# ============================================================================
-# Initialize RobotMCP connection when The Vortex loads so all modules can use it
-if 'robotmcp_global_init' not in st.session_state:
-    st.session_state.robotmcp_global_init = False
+# Note: RobotMCP initialization moved to AFTER admin panel check
+# It will only initialize when user reaches the main homepage
 
-if not st.session_state.robotmcp_global_init:
+# ============================================================================
+# 🤖 ROBOTMCP STATUS DISPLAY (Only after successful login)
+# ============================================================================
+# Show RobotMCP status in sidebar only when user is authenticated on main page
+# This prevents initialization during login/password change flows
+if AUTH_ENABLED and current_user and not st.session_state.get('show_admin_panel', False) and not st.session_state.get('show_user_profile', False):
     try:
-        # Import RobotMCP initialization from test_pilot
         from gen_ai.use_cases.test_pilot import (
             ROBOTMCP_AVAILABLE,
+            _robotmcp_connection_pool,
             start_robotmcp_background_connection,
-            _robotmcp_connection_pool
+            get_robotmcp_helper
         )
 
         if ROBOTMCP_AVAILABLE:
-            # Start connection in background (non-blocking)
-            start_robotmcp_background_connection()
-            st.session_state.robotmcp_global_init = True
-    except ImportError:
-        # RobotMCP not available - silently continue
-        st.session_state.robotmcp_global_init = True  # Don't retry on every rerun
-        pass
-    except Exception as e:
-        # Any other error - log and continue
-        st.session_state.robotmcp_global_init = True  # Don't retry on every rerun
-        import logging
-        logging.debug(f"RobotMCP initialization skipped: {e}")
-        pass
+            with st.sidebar:
+                st.markdown("---")
 
-# ============================================================================
-# 🤖 ROBOTMCP STATUS DISPLAY (Always visible in sidebar)
-# ============================================================================
-# Show RobotMCP status in sidebar for all modules to see
-try:
-    from gen_ai.use_cases.test_pilot import (
-        ROBOTMCP_AVAILABLE,
-        _robotmcp_connection_pool,
-        start_robotmcp_background_connection,
-        get_robotmcp_helper
-    )
+                # Header with manual refresh button
+                col1, col2 = st.columns([4, 1])
+                with col1:
+                    st.markdown("### 🤖 RobotMCP Status")
+                with col2:
+                    if st.button("🔄", key="refresh_robotmcp_global", help="Refresh status and reconnect if needed", use_container_width=True):
+                        # Check connection status and reinitialize if disconnected
+                        import logging
+                        import time
+                        current_status = _robotmcp_connection_pool.get('connection_status', 'disconnected')
+                        current_helper = _robotmcp_connection_pool.get('helper')
+                        bg_task = _robotmcp_connection_pool.get('background_task')
 
-    if ROBOTMCP_AVAILABLE:
-        with st.sidebar:
-            st.markdown("---")
+                        # Determine if reconnection is needed
+                        need_reconnect = False
 
-            # Header with manual refresh button
-            col1, col2 = st.columns([4, 1])
-            with col1:
-                st.markdown("### 🤖 RobotMCP Status")
-            with col2:
-                if st.button("🔄", key="refresh_robotmcp_global", help="Refresh status and reconnect if needed", use_container_width=True):
-                    # Check connection status and reinitialize if disconnected
-                    import logging
-                    import time
-                    current_status = _robotmcp_connection_pool.get('connection_status', 'disconnected')
-                    current_helper = _robotmcp_connection_pool.get('helper')
-                    bg_task = _robotmcp_connection_pool.get('background_task')
+                        # Handle 'connecting' state - wait for connection to complete
+                        if current_status == 'connecting':
+                            logging.info("🔄 Refresh: Connection in progress, waiting for completion...")
 
-                    # Determine if reconnection is needed
-                    need_reconnect = False
+                            # Wait up to 10 seconds for connection to complete
+                            max_wait = 10
+                            waited = 0
+                            while waited < max_wait and current_status == 'connecting':
+                                time.sleep(0.5)
+                                waited += 0.5
+                                current_status = _robotmcp_connection_pool.get('connection_status', 'disconnected')
+                                current_helper = _robotmcp_connection_pool.get('helper')
 
-                    # Handle 'connecting' state - wait for connection to complete
-                    if current_status == 'connecting':
-                        logging.info("🔄 Refresh: Connection in progress, waiting for completion...")
-
-                        # Wait up to 10 seconds for connection to complete
-                        max_wait = 10
-                        waited = 0
-                        while waited < max_wait and current_status == 'connecting':
-                            time.sleep(0.5)
-                            waited += 0.5
-                            current_status = _robotmcp_connection_pool.get('connection_status', 'disconnected')
-                            current_helper = _robotmcp_connection_pool.get('helper')
-
-                        # Check final status after waiting
-                        if current_status == 'connected':
-                            logging.info("✅ Refresh: Connection completed successfully")
-                        elif current_status == 'connecting':
-                            # Still connecting after timeout - check if thread is alive
-                            thread_alive = bg_task.is_alive() if bg_task else False
-                            if thread_alive:
-                                logging.info("⏳ Refresh: Connection still in progress (thread alive)")
-                            else:
-                                logging.warning("⚠️ Refresh: Connection timeout - thread dead, will re-attempt")
-                                need_reconnect = True
-                        else:
-                            # Connection failed
-                            logging.warning(f"⚠️ Refresh: Connection failed (status: {current_status}), will re-attempt")
-                            need_reconnect = True
-
-                    elif current_status in ['disconnected', 'error']:
-                        # Status indicates problem - check helper state
-                        if current_helper and hasattr(current_helper, 'is_connected'):
-                            try:
-                                if not current_helper.is_connected:
-                                    need_reconnect = True
-                                    logging.warning("🔄 Refresh: Helper exists but not connected - will reconnect")
+                            # Check final status after waiting
+                            if current_status == 'connected':
+                                logging.info("✅ Refresh: Connection completed successfully")
+                            elif current_status == 'connecting':
+                                # Still connecting after timeout - check if thread is alive
+                                thread_alive = bg_task.is_alive() if bg_task else False
+                                if thread_alive:
+                                    logging.info("⏳ Refresh: Connection still in progress (thread alive)")
                                 else:
-                                    logging.info("✅ Refresh: Helper is connected, auto-correcting status")
-                                    _robotmcp_connection_pool['connection_status'] = 'connected'
-                            except:
-                                need_reconnect = True
-                                logging.warning("🔄 Refresh: Error checking helper - will reconnect")
-                        else:
-                            need_reconnect = True
-                            logging.warning("🔄 Refresh: No helper or status disconnected - will reconnect")
-
-                    elif current_status == 'connected':
-                        # Already connected - just verify
-                        if current_helper and hasattr(current_helper, 'is_connected'):
-                            try:
-                                if not current_helper.is_connected:
-                                    logging.warning("⚠️ Refresh: Status 'connected' but helper not connected - will reconnect")
+                                    logging.warning("⚠️ Refresh: Connection timeout - thread dead, will re-attempt")
                                     need_reconnect = True
-                                else:
-                                    logging.info("✅ Refresh: Connection verified as healthy")
-                            except:
-                                logging.warning("⚠️ Refresh: Error verifying connection - will reconnect")
-                                need_reconnect = True
-                        else:
-                            logging.warning("⚠️ Refresh: Status 'connected' but no helper - will reconnect")
-                            need_reconnect = True
-
-                    # Trigger reconnection if needed
-                    if need_reconnect:
-                        logging.info("🔄 Refresh button: Reinitializing MCP server connection")
-                        try:
-                            # Reset state
-                            st.session_state.robotmcp_prewarming_started = False
-                            # Start new connection
-                            start_robotmcp_background_connection()
-                            st.session_state.robotmcp_prewarming_started = True
-                            _robotmcp_connection_pool['connection_status'] = 'connecting'
-                            logging.info("✅ Refresh: Reconnection initiated successfully")
-                        except Exception as e:
-                            logging.error(f"❌ Refresh: Reconnection failed: {e}")
-                            _robotmcp_connection_pool['connection_status'] = 'error'
-
-                    # Rerun to show updated status
-                    st.rerun()
-
-            status = _robotmcp_connection_pool.get('connection_status', 'disconnected')
-            helper = _robotmcp_connection_pool.get('helper')  # Get directly from pool
-
-            # ============================================================
-            # AUTO-RECONNECTION LOGIC - Keep connection alive
-            # ============================================================
-            actual_connected = False
-            needs_reconnection = False
-
-            if helper is not None:
-                try:
-                    actual_connected = helper.is_connected
-                    # Auto-correct status if needed
-                    if actual_connected and status in ['error', 'disconnected']:
-                        _robotmcp_connection_pool['connection_status'] = 'connected'
-                        status = 'connected'
-                        import logging
-                        logging.info("✅ Auto-corrected status to 'connected' (helper is connected)")
-                    # If helper says disconnected but status says connected, mark for reconnection
-                    elif not actual_connected and status == 'connected':
-                        needs_reconnection = True
-                        _robotmcp_connection_pool['connection_status'] = 'error'
-                        status = 'error'
-                        import logging
-                        logging.warning("⚠️ Helper disconnected but status was 'connected' - will reconnect")
-                except:
-                    # Error checking connection - assume disconnected
-                    if status == 'connected':
-                        needs_reconnection = True
-                        _robotmcp_connection_pool['connection_status'] = 'error'
-                        status = 'error'
-                        import logging
-                        logging.warning("⚠️ Error checking helper connection - will reconnect")
-            else:
-                # Helper is None - check if status was 'connected' before marking as disconnected
-                # This prevents false disconnections when helper is still being created
-                if status == 'connected':
-                    import logging
-                    logging.warning("⚠️ Helper is None but status was 'connected' - may be loading, will check again")
-                    # Don't immediately mark as disconnected - give it a chance
-                    # Only mark for reconnection if it stays None
-                    pass  # Status stays 'connected', will be checked next refresh
-
-            # Check if background task died but connection isn't established
-            bg_task = _robotmcp_connection_pool.get('background_task')
-            if bg_task is not None:
-                try:
-                    if not bg_task.is_alive() and status in ['connecting', 'disconnected'] and not actual_connected:
-                        needs_reconnection = True
-                except:
-                    pass
-
-            # AUTO-RECONNECT if needed
-            if needs_reconnection:
-                import logging
-                logging.info("🔄 Auto-reconnecting RobotMCP (connection lost)")
-                try:
-                    # Reset state
-                    st.session_state.robotmcp_prewarming_started = False
-                    # Start new connection
-                    start_robotmcp_background_connection()
-                    st.session_state.robotmcp_prewarming_started = True
-                    _robotmcp_connection_pool['connection_status'] = 'connecting'
-                    status = 'connecting'
-                except Exception as e:
-                    logging.error(f"Auto-reconnection failed: {e}")
-                    _robotmcp_connection_pool['connection_status'] = 'error'
-                    status = 'error'
-
-            # ============================================================
-            # PERIODIC HEALTH CHECK - Proactive monitoring
-            # ============================================================
-            # Check connection health every 60 seconds (reduced frequency to avoid overhead)
-            import time
-            if 'robotmcp_last_health_check' not in st.session_state:
-                st.session_state.robotmcp_last_health_check = time.time()
-
-            time_since_check = time.time() - st.session_state.robotmcp_last_health_check
-
-            # Perform health check every 60 seconds (less aggressive)
-            if time_since_check >= 60 and status == 'connected' and actual_connected:
-                st.session_state.robotmcp_last_health_check = time.time()
-                # Update last health check in pool
-                import datetime
-                _robotmcp_connection_pool['last_health_check'] = datetime.datetime.now()
-
-                # Verify connection is still alive with retry logic
-                try:
-                    if helper and hasattr(helper, 'session') and helper.session:
-                        # Try a lightweight check with longer timeout and retry
-                        import asyncio
-                        import logging
-
-                        # Try to use existing event loop if available, otherwise create new one
-                        try:
-                            loop = asyncio.get_event_loop()
-                            if loop.is_closed():
-                                loop = asyncio.new_event_loop()
-                                asyncio.set_event_loop(loop)
-                                loop_created = True
                             else:
-                                loop_created = False
-                        except RuntimeError:
-                            loop = asyncio.new_event_loop()
-                            asyncio.set_event_loop(loop)
-                            loop_created = True
+                                # Connection failed
+                                logging.warning(f"⚠️ Refresh: Connection failed (status: {current_status}), will re-attempt")
+                                need_reconnect = True
 
-                        health_check_passed = False
-                        try:
-                            # Try health check with 15 second timeout (3x more resilient)
-                            max_retries = 2
-                            for attempt in range(max_retries):
+                        elif current_status in ['disconnected', 'error']:
+                            # Status indicates problem - check helper state
+                            if current_helper and hasattr(current_helper, 'is_connected'):
                                 try:
-                                    loop.run_until_complete(
-                                        asyncio.wait_for(helper.session.list_tools(), timeout=15.0)
-                                    )
-                                    health_check_passed = True
-                                    break  # Success!
-                                except asyncio.TimeoutError:
-                                    if attempt < max_retries - 1:
-                                        logging.debug(f"Health check timeout, retry {attempt + 1}/{max_retries}")
-                                        import time
-                                        time.sleep(1.0)  # Wait before retry
+                                    if not current_helper.is_connected:
+                                        need_reconnect = True
+                                        logging.warning("🔄 Refresh: Helper exists but not connected - will reconnect")
                                     else:
-                                        raise  # Last attempt failed
-                                except RuntimeError as e:
-                                    if "Event loop is closed" in str(e):
-                                        logging.warning("Event loop closed - will reconnect")
-                                        needs_reconnection = True
-                                        _robotmcp_connection_pool['connection_status'] = 'error'
-                                        status = 'error'
-                                        break
-                                    else:
-                                        raise
+                                        logging.info("✅ Refresh: Helper is connected, auto-correcting status")
+                                        _robotmcp_connection_pool['connection_status'] = 'connected'
+                                except:
+                                    need_reconnect = True
+                                    logging.warning("🔄 Refresh: Error checking helper - will reconnect")
+                            else:
+                                need_reconnect = True
+                                logging.warning("🔄 Refresh: No helper or status disconnected - will reconnect")
 
-                            if not health_check_passed and not needs_reconnection:
-                                # Health check failed after retries
-                                # But check if helper claims to be connected before reconnecting
-                                if helper and hasattr(helper, 'is_connected'):
-                                    try:
-                                        still_connected = helper.is_connected
-                                        if still_connected:
-                                            # Helper says it's connected even though health check failed
-                                            # This might be an event loop issue, not a real disconnection
-                                            logging.warning("Health check failed but helper.is_connected=True - may be event loop issue")
-                                            # Don't reconnect yet, just log
-                                            pass
-                                        else:
-                                            # Helper is genuinely disconnected
-                                            logging.warning("Health check failed after retries - will reconnect")
-                                            needs_reconnection = True
-                                            _robotmcp_connection_pool['connection_status'] = 'error'
-                                            status = 'error'
-                                    except:
-                                        # Error checking - assume need reconnection
-                                        logging.warning("Health check failed and can't verify helper state - will reconnect")
-                                        needs_reconnection = True
-                                        _robotmcp_connection_pool['connection_status'] = 'error'
-                                        status = 'error'
-                                else:
-                                    # No helper - definitely need reconnection
-                                    logging.warning("Health check failed after retries - will reconnect")
-                                    needs_reconnection = True
-                                    _robotmcp_connection_pool['connection_status'] = 'error'
-                                    status = 'error'
-                        except asyncio.TimeoutError:
-                            # Health check timed out after retries - mark for reconnection
-                            logging.warning("Health check timeout after retries - will reconnect")
+                        elif current_status == 'connected':
+                            # Already connected - just verify
+                            if current_helper and hasattr(current_helper, 'is_connected'):
+                                try:
+                                    if not current_helper.is_connected:
+                                        logging.warning("⚠️ Refresh: Status 'connected' but helper not connected - will reconnect")
+                                        need_reconnect = True
+                                    else:
+                                        logging.info("✅ Refresh: Connection verified as healthy")
+                                except:
+                                    logging.warning("⚠️ Refresh: Error verifying connection - will reconnect")
+                                    need_reconnect = True
+                            else:
+                                logging.warning("⚠️ Refresh: Status 'connected' but no helper - will reconnect")
+                                need_reconnect = True
+
+                        # Trigger reconnection if needed
+                        if need_reconnect:
+                            logging.info("🔄 Refresh button: Reinitializing MCP server connection")
+                            try:
+                                # Reset state
+                                st.session_state.robotmcp_prewarming_started = False
+                                # Start new connection
+                                start_robotmcp_background_connection()
+                                st.session_state.robotmcp_prewarming_started = True
+                                _robotmcp_connection_pool['connection_status'] = 'connecting'
+                                logging.info("✅ Refresh: Reconnection initiated successfully")
+                            except Exception as e:
+                                logging.error(f"❌ Refresh: Reconnection failed: {e}")
+                                _robotmcp_connection_pool['connection_status'] = 'error'
+
+                        # Rerun to show updated status
+                        st.rerun()
+
+                status = _robotmcp_connection_pool.get('connection_status', 'disconnected')
+                helper = _robotmcp_connection_pool.get('helper')  # Get directly from pool
+
+                # ============================================================
+                # AUTO-RECONNECTION LOGIC - Keep connection alive
+                # ============================================================
+                actual_connected = False
+                needs_reconnection = False
+
+                if helper is not None:
+                    try:
+                        actual_connected = helper.is_connected
+                        # Auto-correct status if needed
+                        if actual_connected and status in ['error', 'disconnected']:
+                            _robotmcp_connection_pool['connection_status'] = 'connected'
+                            status = 'connected'
+                            import logging
+                            logging.info("✅ Auto-corrected status to 'connected' (helper is connected)")
+                        # If helper says disconnected but status says connected, mark for reconnection
+                        elif not actual_connected and status == 'connected':
                             needs_reconnection = True
                             _robotmcp_connection_pool['connection_status'] = 'error'
                             status = 'error'
-                        except Exception as e:
-                            # Health check failed - check if it's event loop issue
-                            if "Event loop is closed" in str(e) or "RuntimeError" in str(type(e).__name__):
-                                logging.warning(f"Event loop issue: {e} - will reconnect")
-                                needs_reconnection = True
-                                _robotmcp_connection_pool['connection_status'] = 'error'
-                                status = 'error'
-                            else:
-                                # Other error - log and continue (might be temporary)
-                                logging.warning(f"Health check failed: {e} - will retry next check")
-                                # Don't immediately reconnect - give it another chance
-                        finally:
-                            # Only close loop if we created it
-                            if loop_created and loop and not loop.is_closed():
-                                try:
-                                    loop.close()
-                                except:
-                                    pass
-                except:
-                    pass
-
-            # Display status
-            if status == 'connecting':
-                st.info("Connecting...", icon="🔄")
-                if needs_reconnection:
-                    st.caption("⚡ Auto-reconnecting...")
-                else:
-                    st.caption("Establishing connection...")
-            elif status == 'connected':
-                st.success("Connected & Ready", icon="✅")
-                st.caption("✓ Available to all modules • Auto-monitoring active")
-            elif status == 'error':
-                st.warning("Connection Issue", icon="⚠️")
-                st.caption("Auto-reconnecting in background...")
-                # Manual reconnect button
-                if st.button("🔄 Reconnect Now", key="manual_reconnect_robotmcp", use_container_width=True):
-                    st.session_state.robotmcp_prewarming_started = False
-                    _robotmcp_connection_pool['connection_status'] = 'disconnected'
-                    st.rerun()
-            else:
-                st.info("Initializing...", icon="⏳")
-                st.caption("Starting in background...")
-
-            # Comprehensive Debug Info
-            with st.expander("🔍 Debug Info", expanded=True):
-                # Connection Pool Status
-                st.markdown("**📊 Connection Pool**")
-                st.caption(f"• Status: `{status}`")
-                st.caption(f"• Helper Instance: `{helper is not None}`")
-                st.caption(f"• Helper Connected: `{actual_connected}`")
-
-                # Helper Details
-                if helper is not None:
-                    st.caption(f"• Helper Type: `{type(helper).__name__}`")
-                    try:
-                        if hasattr(helper, 'session'):
-                            st.caption(f"• MCP Session: `{helper.session is not None}`")
-                        if hasattr(helper, 'current_session_id'):
-                            st.caption(f"• Session ID: `{helper.current_session_id}`")
+                            import logging
+                            logging.warning("⚠️ Helper disconnected but status was 'connected' - will reconnect")
                     except:
-                        pass
+                        # Error checking connection - assume disconnected
+                        if status == 'connected':
+                            needs_reconnection = True
+                            _robotmcp_connection_pool['connection_status'] = 'error'
+                            status = 'error'
+                            import logging
+                            logging.warning("⚠️ Error checking helper connection - will reconnect")
+                else:
+                    # Helper is None - check if status was 'connected' before marking as disconnected
+                    # This prevents false disconnections when helper is still being created
+                    if status == 'connected':
+                        import logging
+                        logging.warning("⚠️ Helper is None but status was 'connected' - may be loading, will check again")
+                        # Don't immediately mark as disconnected - give it a chance
+                        # Only mark for reconnection if it stays None
+                        pass  # Status stays 'connected', will be checked next refresh
 
-                st.markdown("---")
-
-                # Background Task Status
-                st.markdown("**🔄 Background Task**")
+                # Check if background task died but connection isn't established
                 bg_task = _robotmcp_connection_pool.get('background_task')
                 if bg_task is not None:
                     try:
-                        is_alive = bg_task.is_alive()
-                        st.caption(f"• Thread Exists: `True`")
-                        st.caption(f"• Thread Alive: `{is_alive}`")
-                        if hasattr(bg_task, 'name'):
-                            st.caption(f"• Thread Name: `{bg_task.name}`")
-                    except Exception as e:
-                        st.caption(f"• Thread Status: `Error - {str(e)[:50]}`")
-                else:
-                    st.caption(f"• Thread Exists: `False`")
-
-                st.markdown("---")
-
-                # Health Check & Timestamps
-                st.markdown("**⏱️ Timestamps & Health**")
-                last_check = _robotmcp_connection_pool.get('last_health_check')
-                if last_check:
-                    try:
-                        import datetime as dt
-                        if isinstance(last_check, dt.datetime):
-                            time_ago = (dt.datetime.now() - last_check).total_seconds()
-                            st.caption(f"• Last Health Check: `{int(time_ago)}s ago`")
-                            st.caption(f"• Timestamp: `{last_check.strftime('%H:%M:%S')}`")
-                        else:
-                            st.caption(f"• Last Health Check: `{last_check}`")
+                        if not bg_task.is_alive() and status in ['connecting', 'disconnected'] and not actual_connected:
+                            needs_reconnection = True
                     except:
-                        st.caption(f"• Last Health Check: `Unknown`")
+                        pass
+
+                # AUTO-RECONNECT if needed
+                if needs_reconnection:
+                    import logging
+                    logging.info("🔄 Auto-reconnecting RobotMCP (connection lost)")
+                    try:
+                        # Reset state
+                        st.session_state.robotmcp_prewarming_started = False
+                        # Start new connection
+                        start_robotmcp_background_connection()
+                        st.session_state.robotmcp_prewarming_started = True
+                        _robotmcp_connection_pool['connection_status'] = 'connecting'
+                        status = 'connecting'
+                    except Exception as e:
+                        logging.error(f"Auto-reconnection failed: {e}")
+                        _robotmcp_connection_pool['connection_status'] = 'error'
+                        status = 'error'
+
+                # Note: Aggressive health checks disabled for performance
+                # Health checks now only happen on manual refresh button click
+
+                # Display status
+                if status == 'connecting':
+                    st.info("Connecting...", icon="🔄")
+                    if needs_reconnection:
+                        st.caption("⚡ Auto-reconnecting...")
+                    else:
+                        st.caption("Establishing connection...")
+                elif status == 'connected':
+                    st.success("Connected & Ready", icon="✅")
+                    st.caption("✓ Available to all modules • Auto-monitoring active")
+                elif status == 'error':
+                    st.warning("Connection Issue", icon="⚠️")
+                    st.caption("Auto-reconnecting in background...")
+                    # Manual reconnect button
+                    if st.button("🔄 Reconnect Now", key="manual_reconnect_robotmcp", use_container_width=True):
+                        st.session_state.robotmcp_prewarming_started = False
+                        _robotmcp_connection_pool['connection_status'] = 'disconnected'
+                        st.rerun()
                 else:
-                    st.caption(f"• Last Health Check: `Never`")
+                    st.info("Initializing...", icon="⏳")
+                    st.caption("Starting in background...")
 
-                # Next health check countdown
-                if 'robotmcp_last_health_check' in st.session_state:
-                    import time
-                    time_since_check = time.time() - st.session_state.robotmcp_last_health_check
-                    next_check_in = max(0, 60 - int(time_since_check))  # Updated to 60s interval
-                    st.caption(f"• Next Health Check: `{next_check_in}s`")
+                # Comprehensive Debug Info
+                with st.expander("🔍 Debug Info", expanded=False):
+                    # Connection Pool Status
+                    st.markdown("**📊 Connection Pool**")
+                    st.caption(f"• Status: `{status}`")
+                    st.caption(f"• Helper Instance: `{helper is not None}`")
+                    st.caption(f"• Helper Connected: `{actual_connected}`")
 
-                # Auto-reconnection status
-                st.caption(f"• Auto-Reconnect: `{'Active' if needs_reconnection else 'Standby'}`")
-                st.caption(f"• Health Check: `Every 60s with 15s timeout + 2 retries`")
-                st.caption(f"• Keep-Alive: `Active (prevents session timeout)`")
+                    # Helper Details
+                    if helper is not None:
+                        st.caption(f"• Helper Type: `{type(helper).__name__}`")
+                        try:
+                            if hasattr(helper, 'session'):
+                                st.caption(f"• MCP Session: `{helper.session is not None}`")
+                            if hasattr(helper, 'current_session_id'):
+                                st.caption(f"• Session ID: `{helper.current_session_id}`")
+                        except:
+                            pass
 
-                st.markdown("---")
+                    st.markdown("---")
 
-                # Session State
-                st.markdown("**💾 Session State**")
-                st.caption(f"• Global Init: `{st.session_state.get('robotmcp_global_init', False)}`")
-                st.caption(f"• Pre-warming Started: `{st.session_state.get('robotmcp_prewarming_started', False)}`")
+                    # Background Task Status
+                    st.markdown("**🔄 Background Task**")
+                    bg_task = _robotmcp_connection_pool.get('background_task')
+                    if bg_task is not None:
+                        try:
+                            is_alive = bg_task.is_alive()
+                            st.caption(f"• Thread Exists: `True`")
+                            st.caption(f"• Thread Alive: `{is_alive}`")
+                            if hasattr(bg_task, 'name'):
+                                st.caption(f"• Thread Name: `{bg_task.name}`")
+                        except Exception as e:
+                            st.caption(f"• Thread Status: `Error - {str(e)[:50]}`")
+                    else:
+                        st.caption(f"• Thread Exists: `False`")
 
-                st.markdown("---")
+                    st.markdown("---")
 
-                # Connection Lock
-                st.markdown("**🔒 Connection Lock**")
-                conn_lock = _robotmcp_connection_pool.get('connection_lock')
-                st.caption(f"• Lock Exists: `{conn_lock is not None}`")
-                if conn_lock is not None:
-                    st.caption(f"• Lock Type: `{type(conn_lock).__name__}`")
+                    # Health Check & Timestamps
+                    st.markdown("**⏱️ Timestamps & Health**")
+                    last_check = _robotmcp_connection_pool.get('last_health_check')
+                    if last_check:
+                        try:
+                            import datetime as dt
+                            if isinstance(last_check, dt.datetime):
+                                time_ago = (dt.datetime.now() - last_check).total_seconds()
+                                st.caption(f"• Last Health Check: `{int(time_ago)}s ago`")
+                                st.caption(f"• Timestamp: `{last_check.strftime('%H:%M:%S')}`")
+                            else:
+                                st.caption(f"• Last Health Check: `{last_check}`")
+                        except:
+                            st.caption(f"• Last Health Check: `Unknown`")
+                    else:
+                        st.caption(f"• Last Health Check: `Never`")
 
-                st.markdown("---")
+                    # Next health check countdown
+                    if 'robotmcp_last_health_check' in st.session_state:
+                        import time
+                        time_since_check = time.time() - st.session_state.robotmcp_last_health_check
+                        next_check_in = max(0, 60 - int(time_since_check))
+                        st.caption(f"• Next Health Check: `{next_check_in}s`")
 
-                # Raw Pool Data
-                st.markdown("**📦 Raw Connection Pool**")
-                pool_keys = list(_robotmcp_connection_pool.keys())
-                st.caption(f"• Keys: `{', '.join(pool_keys)}`")
-                st.caption(f"• Total Entries: `{len(pool_keys)}`")
-except ImportError:
-    # RobotMCP not available - skip status display
-    pass
-except Exception as e:
-    # Any error - skip status display
-    pass
+                    # Auto-reconnection status
+                    st.caption(f"• Auto-Reconnect: `{'Active' if needs_reconnection else 'Standby'}`")
+                    st.caption(f"• Health Check: `Disabled for performance`")
+                    st.caption(f"• Keep-Alive: `Active (prevents session timeout)`")
+
+                    st.markdown("---")
+
+                    # Session State
+                    st.markdown("**💾 Session State**")
+                    st.caption(f"• Global Init: `{st.session_state.get('robotmcp_global_init', False)}`")
+                    st.caption(f"• Pre-warming Started: `{st.session_state.get('robotmcp_prewarming_started', False)}`")
+
+                    st.markdown("---")
+
+                    # Connection Lock
+                    st.markdown("**🔒 Connection Lock**")
+                    conn_lock = _robotmcp_connection_pool.get('connection_lock')
+                    st.caption(f"• Lock Exists: `{conn_lock is not None}`")
+                    if conn_lock is not None:
+                        st.caption(f"• Lock Type: `{type(conn_lock).__name__}`")
+
+                    st.markdown("---")
+
+                    # Raw Pool Data
+                    st.markdown("**📦 Raw Connection Pool**")
+                    pool_keys = list(_robotmcp_connection_pool.keys())
+                    st.caption(f"• Keys: `{', '.join(pool_keys)}`")
+                    st.caption(f"• Total Entries: `{len(pool_keys)}`")
+    except ImportError:
+        # RobotMCP not available - skip status display
+        pass
+    except Exception as e:
+        # Any error - skip status display
+        pass
 
 
 # Function to handle feedback submission
@@ -1836,7 +2034,9 @@ def get_module_friendly_name(module_id):
         "ai_test_execution_orchestrator": "AI Execution Orchestrator",
         "ai_quality_assurance_guardian": "AI Quality Guardian",
         "browser_agent": "Browser Agent",
-        "test_pilot": "TestPilot"
+        "test_pilot": "TestPilot",
+        "edb_query_manager": "EDB Query Manager",
+        "newfold_migration_toolkit": "Newfold Migration Toolkit"
     }
     return module_names.get(module_id, module_id)  # Return the ID itself if no mapping exists
 
@@ -1881,23 +2081,705 @@ def generate_insights():
     return insights
 
 
-# Main header with notifications
-col1, col2, col3 = st.columns([1, 10, 1])
-with col1:
-    if st.button("📋"):
+# Main header with enhanced design and larger buttons
+st.markdown("""
+<style>
+/* Aggressively reduce top padding/margin to move hero section to the very top */
+.main .block-container {
+    padding-top: 0.25rem !important;
+    padding-bottom: 1rem !important;
+    margin-top: 0 !important;
+}
+
+/* Remove all spacing from the main content area */
+section.main > div {
+    padding-top: 0 !important;
+}
+
+/* Reduce spacing in the main content block */
+div[data-testid="stVerticalBlock"] > div:first-child {
+    padding-top: 0 !important;
+    margin-top: 0 !important;
+}
+
+/* Remove gap between stacked elements */
+div[data-testid="stVerticalBlock"] > div[data-testid="element-container"] {
+    margin-top: 0 !important;
+}
+
+/* Enhanced header button styling */
+div[data-testid="column"] button[kind="secondary"] {
+    font-size: 2rem !important;
+    padding: 1rem 1.5rem !important;
+    min-height: 60px !important;
+    border-radius: 12px !important;
+    background: linear-gradient(135deg, #EC5328, #ff6b6b) !important;
+    color: white !important;
+    border: 2px solid rgba(255,255,255,0.2) !important;
+    box-shadow: 0 4px 12px rgba(236, 83, 40, 0.3) !important;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+div[data-testid="column"] button[kind="secondary"]:hover {
+    transform: translateY(-4px) scale(1.05) !important;
+    box-shadow: 0 8px 20px rgba(236, 83, 40, 0.5) !important;
+    border: 2px solid white !important;
+}
+
+div[data-testid="column"] button[kind="secondary"]:active {
+    transform: translateY(-2px) scale(1.02) !important;
+}
+
+/* Better alignment for header columns */
+div[data-testid="column"] > div {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ============================================================================
+# USER MENU & NAVIGATION (Top Right)
+# ============================================================================
+# Only show navigation when on main page (not in admin panel or profile)
+if AUTH_ENABLED and current_user and not st.session_state.get('show_admin_panel', False) and not st.session_state.get('show_user_profile', False):
+    # Create a top navigation bar with user info
+    nav_col1, nav_col2, nav_col3 = st.columns([3, 1, 1])
+
+    with nav_col1:
+        st.markdown(f"""
+        <div style="padding: 0.5rem; color: #475569; font-size: 0.95rem;">
+            👤 <strong>{current_user.full_name or current_user.username}</strong> 
+            <span style="color: #94a3b8;">({', '.join(current_user.roles)})</span>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with nav_col2:
+        # Check if user has admin role (super_admin or admin only)
+        has_admin_access = st_auth.is_admin()
+        if has_admin_access:
+            if st.button("🔐 Admin Panel", key="admin_panel_btn", use_container_width=True):
+                import logging
+                logging.info("🔐 Admin Panel button clicked - setting show_admin_panel=True")
+                # Clear conflicting navigation states
+                st.session_state.show_user_profile = False
+                st.session_state.show_admin_panel = True
+                st.session_state.user_menu_previous = "🧭 Menu"
+                logging.info(f"🔐 State after setting: show_admin_panel={st.session_state.show_admin_panel}")
+                st.rerun()
+
+    with nav_col3:
+        # Initialize user menu state to prevent auto-redirect
+        if 'user_menu_previous' not in st.session_state:
+            st.session_state.user_menu_previous = "🧭 Menu"
+
+        user_menu = st.selectbox(
+            "User Menu",
+            ["🧭 Menu", "👤 Profile", "🚪 Logout"],
+            key="user_menu_select",
+            label_visibility="collapsed",
+            index=0  # Always default to Menu
+        )
+
+        # Only trigger action if user menu selection has changed and is not the default
+        if user_menu != "🧭 Menu" and user_menu != st.session_state.user_menu_previous:
+            st.session_state.user_menu_previous = user_menu
+
+            if user_menu == "🚪 Logout":
+                st_auth.logout()
+                # Clear all session state on logout
+                for key in list(st.session_state.keys()):
+                    del st.session_state[key]
+                st.rerun()
+            elif user_menu == "👤 Profile":
+                st.session_state.show_user_profile = True
+                st.rerun()
+        elif user_menu == "🧭 Menu":
+            # Reset previous if user goes back to menu
+            st.session_state.user_menu_previous = "🧭 Menu"
+
+# Check if admin panel should be shown
+if AUTH_ENABLED and st.session_state.get('show_admin_panel', False):
+    import logging
+    logging.info("🔐 Rendering Admin Panel (show_admin_panel=True)")
+
+    # SECURITY: Double-check user has admin role before rendering
+    if not st_auth.is_admin():
+        logging.warning(f"🚨 Unauthorized admin panel access attempt by user: {st_auth.get_current_user().username if st_auth.get_current_user() else 'unknown'}")
+        st.error("⛔ Access Denied: Admin privileges required.")
+        st.session_state.show_admin_panel = False
+        st.rerun()
+
+    if st.button("⬅️ Back to Main", key="back_from_admin"):
+        logging.info("⬅️ Back button clicked - clearing show_admin_panel")
+        st.session_state.show_admin_panel = False
+        # Reset user menu to default
+        st.session_state.user_menu_previous = "🧭 Menu"
+        st.rerun()
+    render_admin_panel(st_auth)
+    logging.info("🔐 Admin panel rendered - calling st.stop()")
+    st.stop()
+
+# Check if user profile should be shown
+if AUTH_ENABLED and st.session_state.get('show_user_profile', False):
+    import logging
+    logging.info("👤 Rendering User Profile (show_user_profile=True)")
+    if st.button("⬅️ Back to Main", key="back_from_profile"):
+        logging.info("⬅️ Back button clicked - clearing show_user_profile")
+        st.session_state.show_user_profile = False
+        # Reset user menu to default
+        st.session_state.user_menu_previous = "🧭 Menu"
+        st.rerun()
+    render_user_profile(st_auth)
+    logging.info("👤 User profile rendered - calling st.stop()")
+    st.stop()
+
+# If we reach here, we're on the main homepage
+logger.info("🌀 Rendering main homepage (not admin panel or profile)")
+
+# ============================================================================
+# 🚀 ROBOTMCP INITIALIZATION - Only on main homepage
+# ============================================================================
+# Initialize RobotMCP ONLY when user is on main homepage (not admin panel/profile)
+# This ensures it doesn't initialize during intermediate navigation
+if AUTH_ENABLED and current_user:
+    if 'robotmcp_global_init' not in st.session_state:
+        st.session_state.robotmcp_global_init = False
+
+    if not st.session_state.robotmcp_global_init:
+        try:
+            # Import RobotMCP initialization from test_pilot
+            from gen_ai.use_cases.test_pilot import (
+                ROBOTMCP_AVAILABLE,
+                start_robotmcp_background_connection,
+                _robotmcp_connection_pool
+            )
+
+            if ROBOTMCP_AVAILABLE:
+                # Start connection in background (non-blocking)
+                start_robotmcp_background_connection()
+                st.session_state.robotmcp_global_init = True
+                import logging
+                logging.info("🚀 RobotMCP initialized on main homepage")
+        except ImportError:
+            # RobotMCP not available - silently continue
+            st.session_state.robotmcp_global_init = True
+        except Exception as e:
+            # Any other error - log and continue
+            st.session_state.robotmcp_global_init = True
+            import logging
+            logging.debug(f"RobotMCP initialization skipped: {e}")
+
+# Hero Section - The Vortex
+st.markdown("""
+<div style="
+    background: linear-gradient(135deg, #EC5328 0%, #ff6b6b 50%, #EC5328 100%);
+    border-radius: 16px;
+    padding: 1.5rem 2rem;
+    text-align: center;
+    box-shadow: 0 8px 24px rgba(236, 83, 40, 0.35);
+    border: 2px solid rgba(255, 255, 255, 0.2);
+    margin-top: 0;
+    margin-bottom: 0.5rem;
+">
+    <div style="
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.75rem;
+        margin-bottom: 0.5rem;
+    ">
+        <span style="font-size: 2.5rem; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.2));">🌀</span>
+        <h1 style="
+            font-family: 'Inter', sans-serif;
+            font-size: 3rem;
+            font-weight: 900;
+            margin: 0;
+            color: white;
+            letter-spacing: -0.02em;
+            text-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        ">The Vortex</h1>
+    </div>
+    <p style="
+        font-family: 'Inter', sans-serif;
+        font-size: 1.25rem;
+        color: rgba(255,255,255,0.95);
+        margin: 0 0 0.75rem 0;
+        font-weight: 600;
+        letter-spacing: 0.5px;
+        text-shadow: 0 1px 2px rgba(0,0,0,0.2);
+    ">
+        <u>V</u>irtual <u>O</u>rchestrator for <u>R</u>eal-world <u>T</u>echnology <u>EX</u>cellence
+    </p>
+    <div style="
+        height: 2px;
+        background: rgba(255,255,255,0.3);
+        margin: 0.75rem auto;
+        width: 50%;
+        border-radius: 2px;
+    "></div>
+    <p style="
+        font-family: 'Inter', sans-serif;
+        font-size: 1rem;
+        color: rgba(255,255,255,0.98);
+        margin: 0.75rem 0 0 0;
+        line-height: 1.6;
+        font-weight: 400;
+    ">
+        Your AI-powered portal for intelligent test automation, quality assurance,<br>
+        and continuous testing excellence. Select a module below to begin your journey.
+    </p>
+</div>
+""", unsafe_allow_html=True)
+
+# Navigation Buttons - Centered below the hero section
+st.markdown("""
+<style>
+.nav-button-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 1rem;
+    margin: 0 auto 0.75rem auto;
+    max-width: 600px;
+}
+
+/* Remove extra spacing around navigation columns */
+div[data-testid="column"]:has(button[key="home_button"]),
+div[data-testid="column"]:has(button[key="history_button"]),
+div[data-testid="column"]:has(button[key="notification_button"]),
+div[data-testid="column"]:has(button[key="settings_button"]) {
+    margin-top: 0 !important;
+    padding-top: 0 !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# First row - Main navigation
+nav_col1, nav_col2, nav_col3, nav_col4, nav_col5, nav_col6, nav_col7 = st.columns([2, 1.2, 1.2, 1.2, 1.2, 2, 0.1])
+with nav_col2:
+    if st.button("🏠 Home", help="Go to Homepage", key="home_button", use_container_width=True):
+        st.session_state.last_module = None
+        if "module" in st.query_params:
+            del st.query_params["module"]
+        st.rerun()
+with nav_col3:
+    if st.button("📋 Usage History", help="View Usage History", key="history_button", use_container_width=True):
         st.session_state.show_history = not st.session_state.get('show_history', False)
-with col2:
-    st.markdown('<h1 class="main-header">"The Vortex" - Gen AI Testing Portal</h1>', unsafe_allow_html=True)
-with col3:
-    if st.button(f"🔔 {st.session_state.notification_count}" if st.session_state.notification_count > 0 else "🔔"):
+with nav_col4:
+    notification_count = st.session_state.notification_count
+    notification_label = f"🔔 Notifications ({notification_count})" if notification_count > 0 else "🔔 Notifications"
+    if st.button(notification_label, help="View Notifications", key="notification_button", use_container_width=True):
         st.session_state.show_notifications = not st.session_state.get('show_notifications', False)
+with nav_col5:
+    if st.button("⚙️ Settings", help="Configuration Settings", key="settings_button", use_container_width=True):
+        st.session_state.show_settings = not st.session_state.get('show_settings', False)
+
+# Second row - Info & Guide buttons
+info_col1, info_col2, info_col3, info_col4, info_col5, info_col6, info_col7 = st.columns([0.5, 1.3, 1.3, 1.3, 1.3, 1.3, 0.5])
+with info_col2:
+    if st.button("🚀 Quick Start", help="Get Started in 3 Easy Steps", key="quickstart_button", use_container_width=True):
+        st.session_state.show_quickstart = not st.session_state.get('show_quickstart', False)
+with info_col3:
+    if st.button("📚 Modules", help="Complete Module List", key="overview_button", use_container_width=True):
+        st.session_state.show_overview = not st.session_state.get('show_overview', False)
+with info_col4:
+    if st.button("✨ Features", help="Feature Highlights", key="features_button", use_container_width=True):
+        st.session_state.show_features = not st.session_state.get('show_features', False)
+with info_col5:
+    if st.button("💡 Tips", help="Tips & Best Practices", key="tips_button", use_container_width=True):
+        st.session_state.show_tips = not st.session_state.get('show_tips', False)
+with info_col6:
+    insights_available = len(st.session_state.history) > 2
+    insights_label = "🔮 AI Insights" if insights_available else "🔮 AI Insights (N/A)"
+    insights_help = "AI-Powered Insights & Recommendations" if insights_available else "Requires 3+ activities to generate insights"
+    if st.button(insights_label, help=insights_help, key="insights_button", use_container_width=True, disabled=not insights_available):
+        st.session_state.show_insights = not st.session_state.get('show_insights', False)
+
+# Quick Start Guide - Show on button click
+if st.session_state.get('show_quickstart', False):
+    with st.expander("🚀 Quick Start Guide - Get Started in 3 Easy Steps", expanded=True):
+        quick_col1, quick_col2, quick_col3 = st.columns(3)
+
+        with quick_col1:
+            st.markdown("""
+        <div style="
+            background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+            border: 2px solid #e2e8f0;
+            border-left: 6px solid #EC5328;
+            border-radius: 16px;
+            padding: 2rem;
+            height: 280px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        ">
+            <div style="font-size: 4rem; margin-bottom: 1rem;">🎯</div>
+            <h4 style="
+                font-family: 'Inter', sans-serif;
+                font-size: 1.35rem;
+                font-weight: 700;
+                color: #1e293b;
+                margin-bottom: 1rem;
+                text-align: center;
+            ">Step 1: Choose Your Module</h4>
+            <p style="
+                font-family: 'Inter', sans-serif;
+                font-size: 1rem;
+                color: #64748b;
+                line-height: 1.6;
+                text-align: center;
+            ">
+                Browse through our organized categories below and select the module that fits your testing needs.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with quick_col2:
+        st.markdown("""
+        <div style="
+            background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+            border: 2px solid #e2e8f0;
+            border-left: 6px solid #6366f1;
+            border-radius: 16px;
+            padding: 2rem;
+            height: 280px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        ">
+            <div style="font-size: 4rem; margin-bottom: 1rem;">⚙️</div>
+            <h4 style="
+                font-family: 'Inter', sans-serif;
+                font-size: 1.35rem;
+                font-weight: 700;
+                color: #1e293b;
+                margin-bottom: 1rem;
+                text-align: center;
+            ">Step 2: Configure & Execute</h4>
+            <p style="
+                font-family: 'Inter', sans-serif;
+                font-size: 1rem;
+                color: #64748b;
+                line-height: 1.6;
+                text-align: center;
+            ">
+                Use the intuitive interface to configure your tests and let AI handle the complexity.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with quick_col3:
+        st.markdown("""
+        <div style="
+            background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+            border: 2px solid #e2e8f0;
+            border-left: 6px solid #10b981;
+            border-radius: 16px;
+            padding: 2rem;
+            height: 280px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        ">
+            <div style="font-size: 4rem; margin-bottom: 1rem;">📊</div>
+            <h4 style="
+                font-family: 'Inter', sans-serif;
+                font-size: 1.35rem;
+                font-weight: 700;
+                color: #1e293b;
+                margin-bottom: 1rem;
+                text-align: center;
+            ">Step 3: Analyze Results</h4>
+            <p style="
+                font-family: 'Inter', sans-serif;
+                font-size: 1rem;
+                color: #64748b;
+                line-height: 1.6;
+                text-align: center;
+            ">
+                Review AI-powered insights, metrics, and recommendations for continuous improvement.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+# Detailed Module Overview - Complete List - Show on button click
+if st.session_state.get('show_overview', False):
+    with st.expander("📚 Detailed Module Overview - Complete List", expanded=True):
+        st.markdown("""
+    ### 🧪 Test Generation & Intelligence
+    - **TestPilot**: AI-powered assistant that fetches test cases from Jira/Zephyr and converts them to Robot Framework scripts
+    - **Dynamic Test Cases**: Generate comprehensive test cases from requirements and specifications
+    - **Intelligent Test Data**: Create realistic and edge-case test data automatically
+    - **API Generation**: Generate API tests from OpenAPI/Swagger specifications
+
+    ### 🔧 Test Maintenance & Quality
+    - **Self-Healing Tests**: Automatically repair broken tests when UI elements change
+    - **Visual AI Testing**: Perform AI-powered visual regression testing and UI analysis
+    - **RoboCop Lint Checker**: Static code analysis for Robot Framework to enforce coding standards
+    - **Smart Test Optimizer**: Reduce test execution time by up to 70% with AI optimization
+    - **FOS Quality Checks**: Comprehensive front-of-site quality assurance
+
+    ### 🚀 Automation & Integration
+    - **Cross-Platform Orchestrator**: Intelligent orchestration across browsers, devices, and platforms
+    - **Performance Testing**: Load, stress, and performance testing capabilities
+    - **Security Penetration Testing**: Automated security vulnerability scanning and OWASP checks
+    - **Browser Agent**: AI-powered browser automation for complex workflows
+
+    ### 📊 DevOps & Monitoring
+    - **RF Dashboard Analytics**: AI-powered insights from Robot Framework test results with trend analysis
+    - **Jenkins Dashboard**: Integration with Jenkins for CI/CD pipeline monitoring
+    - **EDB Query Manager**: Comprehensive EDB account management with AI-powered insights
+    - **Database Insights**: Database optimization and performance recommendations
+    - **AI Environment Manager**: Smart test environment provisioning and data management
+    - **Newfold Migration Toolkit**: CSRT and RAS operations for product lifecycle management
+
+    ### 📝 Analysis & Documentation
+    - **Auto Documentation**: Generate comprehensive test documentation automatically
+    - **Smart CX Navigator**: AI-driven customer experience optimization and insights
+    - **Pull Requests Reviewer**: AI-powered code review for quality and compliance
+    - **Manual Test Analyzer**: Transform manual testing with AI recommendations
+
+    ### 🔮 Predictive Intelligence
+    - **AI Bug Predictor**: Predict potential bugs before they occur in production
+    - **AI Execution Orchestrator**: Intelligent test execution with priority-based scheduling
+    - **AI Quality Guardian**: Comprehensive quality assurance with ML-powered insights
+    """)
+
+    # Add a dashboard or recent activity section
+    st.markdown("### 📊 Recent Activity")
+    if st.session_state.history:
+        st.markdown("Here are your last 5 activities:")
+        # Display the last 5 activities in a table
+        recent_activities = st.session_state.history[-5:]
+        recent_df = pd.DataFrame(recent_activities)
+        recent_df['timestamp'] = pd.to_datetime(recent_df['timestamp'])
+        recent_df = recent_df.sort_values(by='timestamp', ascending=False)
+        recent_df = recent_df[['module', 'timestamp']]
+        recent_df.columns = ['Module', 'Timestamp']
+        recent_df['Timestamp'] = recent_df['Timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
+        recent_df.reset_index(drop=True, inplace=True)
+        st.markdown("#### Last 5 Activities")
+        st.dataframe(recent_df, use_container_width=True)
+    else:
+        st.markdown('<div style="background-color: var(--primary-color); padding: 10px; border-radius: var(--border-radius-md); color: white;">No recent activity. Start by clicking on one of the use case options above.</div>', unsafe_allow_html=True)
+
+# Feature Highlights - Show on button click
+if st.session_state.get('show_features', False):
+    with st.expander("✨ Feature Highlights - Discover What The Vortex Can Do", expanded=True):
+        feat_col1, feat_col2, feat_col3 = st.columns(3)
+
+        with feat_col1:
+            st.markdown("""
+            <div style="
+                background: white;
+                border: 2px solid #e2e8f0;
+                border-radius: 12px;
+                padding: 1.5rem;
+                margin-bottom: 1rem;
+                height: 180px;
+                display: flex;
+                flex-direction: column;
+            ">
+            <h4 style="
+                font-family: 'Inter', sans-serif;
+                font-weight: 700;
+                color: #EC5328;
+                margin-bottom: 0.75rem;
+                display: flex;
+                align-items: center;
+                gap: 0.5rem;
+            ">🤖 AI-Driven Automation</h4>
+            <p style="
+                font-family: 'Inter', sans-serif;
+                font-size: 0.95rem;
+                color: #64748b;
+                line-height: 1.6;
+                margin: 0;
+            ">
+                Leverage advanced AI models to automatically generate, maintain, and optimize your test suites.
+            </p>
+        </div>
+        
+        <div style="
+            background: white;
+            border: 2px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+            height: 180px;
+            display: flex;
+            flex-direction: column;
+        ">
+            <h4 style="
+                font-family: 'Inter', sans-serif;
+                font-weight: 700;
+                color: #6366f1;
+                margin-bottom: 0.75rem;
+                display: flex;
+                align-items: center;
+                gap: 0.5rem;
+            ">🔧 Self-Healing Capabilities</h4>
+            <p style="
+                font-family: 'Inter', sans-serif;
+                font-size: 0.95rem;
+                color: #64748b;
+                line-height: 1.6;
+                margin: 0;
+            ">
+                Tests automatically adapt to UI changes, reducing maintenance overhead by up to 80%.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with feat_col2:
+        st.markdown("""
+        <div style="
+            background: white;
+            border: 2px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+            height: 180px;
+            display: flex;
+            flex-direction: column;
+        ">
+            <h4 style="
+                font-family: 'Inter', sans-serif;
+                font-weight: 700;
+                color: #10b981;
+                margin-bottom: 0.75rem;
+                display: flex;
+                align-items: center;
+                gap: 0.5rem;
+            ">📊 Real-Time Analytics</h4>
+            <p style="
+                font-family: 'Inter', sans-serif;
+                font-size: 0.95rem;
+                color: #64748b;
+                line-height: 1.6;
+                margin: 0;
+            ">
+                Get instant insights with AI-powered dashboards that predict failures and suggest optimizations.
+            </p>
+        </div>
+        
+        <div style="
+            background: white;
+            border: 2px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+            height: 180px;
+            display: flex;
+            flex-direction: column;
+        ">
+            <h4 style="
+                font-family: 'Inter', sans-serif;
+                font-weight: 700;
+                color: #f59e0b;
+                margin-bottom: 0.75rem;
+                display: flex;
+                align-items: center;
+                gap: 0.5rem;
+            ">🚀 Cross-Platform Testing</h4>
+            <p style="
+                font-family: 'Inter', sans-serif;
+                font-size: 0.95rem;
+                color: #64748b;
+                line-height: 1.6;
+                margin: 0;
+            ">
+                Seamlessly test across web, mobile, desktop, and API platforms with intelligent orchestration.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with feat_col3:
+        st.markdown("""
+        <div style="
+            background: white;
+            border: 2px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+            height: 180px;
+            display: flex;
+            flex-direction: column;
+        ">
+            <h4 style="
+                font-family: 'Inter', sans-serif;
+                font-weight: 700;
+                color: #8b5cf6;
+                margin-bottom: 0.75rem;
+                display: flex;
+                align-items: center;
+                gap: 0.5rem;
+            ">🔮 Predictive Intelligence</h4>
+            <p style="
+                font-family: 'Inter', sans-serif;
+                font-size: 0.95rem;
+                color: #64748b;
+                line-height: 1.6;
+                margin: 0;
+            ">
+                AI predicts potential bugs and quality issues before they reach production.
+            </p>
+        </div>
+        
+        <div style="
+            background: white;
+            border: 2px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+            height: 180px;
+            display: flex;
+            flex-direction: column;
+        ">
+            <h4 style="
+                font-family: 'Inter', sans-serif;
+                font-weight: 700;
+                color: #ec4899;
+                margin-bottom: 0.75rem;
+                display: flex;
+                align-items: center;
+                gap: 0.5rem;
+            ">🏢 Enterprise Ready</h4>
+            <p style="
+                font-family: 'Inter', sans-serif;
+                font-size: 0.95rem;
+                color: #64748b;
+                line-height: 1.6;
+                margin: 0;
+            ">
+                Built with scalability, security, and observability in mind for enterprise deployments.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
 
 # Display history if toggled
 if st.session_state.get('show_history', False):
-    with st.expander("Usage History", expanded=True):
+    with st.expander("📊 Usage History", expanded=True):
         if st.session_state.history:
-            history_df = pd.DataFrame(st.session_state.history)
+            # Apply max_history limit
+            max_history = st.session_state.get('max_history', 50)
+            limited_history = st.session_state.history[-max_history:] if len(st.session_state.history) > max_history else st.session_state.history
+
+            history_df = pd.DataFrame(limited_history)
             st.dataframe(history_df, use_container_width=True)
+
+            if len(st.session_state.history) > max_history:
+                st.caption(f"Showing latest {max_history} of {len(st.session_state.history)} total entries. Adjust in Settings to show more.")
 
             # Display usage chart
             if len(st.session_state.execution_metrics['modules_usage']) > 0 and PLOTLY_AVAILABLE:
@@ -1916,9 +2798,9 @@ if st.session_state.get('show_history', False):
         else:
             st.markdown('<div style="background-color: var(--primary-color); padding: 10px; border-radius: var(--border-radius-md); color: white;">No usage history yet</div>', unsafe_allow_html=True)
 
-# Display notifications if toggled
+# Display notifications if toggled with enhanced styling
 if st.session_state.get('show_notifications', False):
-    with st.expander("Notifications", expanded=True):
+    with st.expander("🔔 Notifications Center", expanded=True):
         if len(st.session_state.notifications) > 0:
             # Add management buttons at the top
             col1, col2 = st.columns([1, 1])
@@ -1996,157 +2878,771 @@ if st.session_state.get('show_notifications', False):
         else:
             st.markdown('<div style="background-color: var(--primary-color); padding: 10px; border-radius: var(--border-radius-md); color: white;">No notifications yet. Notifications will appear here when tests are executed.</div>', unsafe_allow_html=True)
 
-# Search bar
-with st.container():
-    st.markdown('<div class="search-bar">', unsafe_allow_html=True)
-    search_query = st.text_input("🔍 Search use cases, features or get help...",
-                                 placeholder="e.g., 'generate API tests' or 'fix failing tests'")
-    st.markdown('</div>', unsafe_allow_html=True)
-
-# AI Insights section (if we have enough data)
-if len(st.session_state.history) > 2:
+# AI Insights section - Show on button click
+if st.session_state.get('show_insights', False) and len(st.session_state.history) > 2:
     insights = generate_insights()
     if insights:
-        with st.container():
-            st.markdown('<div class="ai-insights">', unsafe_allow_html=True)
-            st.markdown("#### 💡 AI Insights")
-            for insight in insights:
-                st.markdown(f"- {insight}")
-            st.markdown('</div>', unsafe_allow_html=True)
+        with st.expander("💡 AI-Powered Insights & Recommendations", expanded=True):
+            st.markdown("""
+            <div style="
+                background: linear-gradient(135deg, rgba(236, 83, 40, 0.05) 0%, rgba(255, 107, 107, 0.05) 100%);
+                border: 2px solid rgba(236, 83, 40, 0.2);
+                border-left: 6px solid #EC5328;
+                border-radius: 16px;
+                padding: 1.5rem;
+                box-shadow: 0 4px 12px rgba(236, 83, 40, 0.1);
+                position: relative;
+            ">
+                <div style="
+                    position: absolute;
+                    top: 1rem;
+                    right: 1rem;
+                    font-size: 2.5rem;
+                    opacity: 0.2;
+                ">💡</div>
+                <p style="
+                    font-family: 'Inter', sans-serif;
+                    font-size: 0.9rem;
+                    color: #64748b;
+                    margin-bottom: 1rem;
+                ">Based on your usage patterns and test execution history</p>
+            </div>
+            """, unsafe_allow_html=True)
 
-# Navigation menu with active state
-st.markdown('<div class="nav-container">', unsafe_allow_html=True)
+            for idx, insight in enumerate(insights):
+                st.markdown(f"""
+                <div style="
+                    font-family: 'Inter', sans-serif;
+                    font-size: 1rem;
+                    color: #1e293b;
+                    padding: 1rem 1.25rem;
+                    background: white;
+                    border-radius: 10px;
+                    margin-bottom: 0.75rem;
+                    border-left: 4px solid #EC5328;
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+                    transition: all 0.3s ease;
+                ">
+                    <div style="display: flex; align-items: flex-start; gap: 1rem;">
+                        <div style="
+                            background: linear-gradient(135deg, #EC5328, #ff6b6b);
+                            color: white;
+                            width: 28px;
+                            height: 28px;
+                            border-radius: 50%;
+                            display: flex;
+                            align-items: center;
+                            justify-content: center;
+                            font-weight: 700;
+                            font-size: 0.85rem;
+                            flex-shrink: 0;
+                        ">{idx + 1}</div>
+                        <div style="flex: 1; padding-top: 2px;">{insight}</div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
 
-# Define all the use cases
-use_cases = {
-    "Dynamic Test Cases": "dynamic_tc_generation",
-    "Intelligent Test Data": "intelligent_test_data_generation",
-    "Self-Healing Tests": "self_healing_tests",
-    "Visual AI Testing": "visual_ai_testing",
-    "API Generation": "api_generation",
-    "Auto Documentation": "auto_documentation",
-    "Performance Testing": "performance_testing",
-    "RoboCop Lint Checker": "robocop_lint_checker",
-    "Smart CX Navigator": "smart_cx_navigator",
-    "Security Penetration Testing": "security_penetration_testing",
-    "Pull Requests Reviewer": "pull_requests_reviewer",
-    "Database Insights": "database_insights",
-    "Jenkins Dashboard": "jenkins_dashboard",
-    "RF Dashboard Analytics": "rf_dashboard_analytics",
-    "FOS Quality Checks": "fos_checks",
-    # Advanced AI-Powered Use Cases
-    "AI Bug Predictor": "intelligent_bug_predictor",
-    "Smart Test Optimizer": "smart_test_optimizer",
-    "Cross-Platform Orchestrator": "ai_cross_platform_orchestrator",
-    "AI Environment Manager": "ai_test_environment_manager",
-    "Manual Test Analyzer": "manual_test_analysis",
-    "AI Execution Orchestrator": "ai_test_execution_orchestrator",
-    "AI Quality Guardian": "ai_quality_assurance_guardian",
-    "Browser Agent": "browser_agent",
-    "TestPilot": "test_pilot"
+
+# Display Settings if toggled
+if st.session_state.get('show_settings', False):
+    with st.expander("⚙️ Configuration Settings", expanded=True):
+
+        settings_col1, settings_col2 = st.columns(2)
+
+        with settings_col1:
+            st.subheader("🎨 Display Preferences")
+
+            # Theme settings with proper index handling
+            theme_options = ["Auto (System)", "Light", "Dark"]
+            current_theme = st.session_state.get('theme_mode', 'Auto (System)')
+            theme_index = theme_options.index(current_theme) if current_theme in theme_options else 0
+
+            theme_option = st.selectbox(
+                "Theme Mode",
+                theme_options,
+                index=theme_index,
+                help="Choose your preferred theme",
+                key="theme_selector"
+            )
+
+            # Update theme in session state
+            if theme_option != st.session_state.get('theme_mode', 'Auto (System)'):
+                st.session_state.theme_mode = theme_option
+                st.info(f"Theme changed to: {theme_option}. Click 'Save Settings' to apply.")
+
+            # Compact mode
+            compact_mode = st.checkbox(
+                "Compact Mode",
+                value=st.session_state.get('compact_mode', False),
+                help="Reduce spacing for more content on screen",
+                key="compact_mode_checkbox"
+            )
+            st.session_state.compact_mode = compact_mode
+
+            # Show tooltips
+            show_tooltips = st.checkbox(
+                "Show Tooltips",
+                value=st.session_state.get('show_tooltips', True),
+                help="Display helpful tooltips on hover",
+                key="tooltips_checkbox"
+            )
+            st.session_state.show_tooltips = show_tooltips
+
+            st.subheader("🔔 Notification Settings")
+
+            # Auto-show notifications
+            auto_notifications = st.checkbox(
+                "Auto-show Notifications",
+                value=st.session_state.get('auto_notifications', True),
+                help="Automatically display notifications panel after test execution",
+                key="auto_notif_checkbox"
+            )
+            st.session_state.auto_notifications = auto_notifications
+
+            # Notification sound
+            notification_sound = st.checkbox(
+                "Notification Sound",
+                value=st.session_state.get('notification_sound', False),
+                help="Play sound when new notifications arrive",
+                key="notif_sound_checkbox"
+            )
+            st.session_state.notification_sound = notification_sound
+
+            if notification_sound:
+                st.caption("🔊 Sound will play when tests complete")
+
+        with settings_col2:
+            st.subheader("⚡ Performance Settings")
+
+            # Cache duration
+            cache_duration = st.slider(
+                "Cache Duration (hours)",
+                min_value=1,
+                max_value=24,
+                value=st.session_state.get('cache_duration', 12),
+                help="How long to cache test data",
+                key="cache_slider"
+            )
+            st.session_state.cache_duration = cache_duration
+
+            # Max history items
+            max_history = st.slider(
+                "Max History Items",
+                min_value=10,
+                max_value=100,
+                value=st.session_state.get('max_history', 50),
+                step=10,
+                help="Maximum number of history items to keep",
+                key="history_slider"
+            )
+            st.session_state.max_history = max_history
+
+            st.subheader("🔐 Security & Privacy")
+
+            # Auto-logout
+            auto_logout = st.checkbox(
+                "Auto-logout on Inactivity",
+                value=st.session_state.get('auto_logout', False),
+                help="Automatically logout after period of inactivity",
+                key="auto_logout_checkbox"
+            )
+            st.session_state.auto_logout = auto_logout
+
+            if auto_logout:
+                logout_duration = st.slider(
+                    "Inactivity Timeout (minutes)",
+                    min_value=5,
+                    max_value=60,
+                    value=st.session_state.get('logout_duration', 30),
+                    step=5,
+                    key="logout_slider"
+                )
+                st.session_state.logout_duration = logout_duration
+
+        # Action buttons
+        action_col1, action_col2, action_col3, action_col4 = st.columns([1, 1, 1, 3])
+
+        with action_col1:
+            if st.button("💾 Save Settings", use_container_width=True, key="save_settings_btn"):
+                st.success("✅ Settings saved successfully!")
+                st.rerun()
+
+        with action_col2:
+            if st.button("🔄 Reset to Default", use_container_width=True, key="reset_settings_btn"):
+                # Reset to defaults
+                st.session_state.theme_mode = 'Auto (System)'
+                st.session_state.compact_mode = False
+                st.session_state.show_tooltips = True
+                st.session_state.auto_notifications = True
+                st.session_state.notification_sound = False
+                st.session_state.cache_duration = 12
+                st.session_state.max_history = 50
+                st.session_state.auto_logout = False
+                st.session_state.logout_duration = 30
+                st.success("✅ Settings reset to defaults!")
+                st.rerun()
+
+        with action_col3:
+            if st.button("🗑️ Clear Cache", use_container_width=True, key="clear_cache_btn"):
+                st.cache_data.clear()
+                st.success("✅ Cache cleared successfully!")
+
+# Apply theme mode settings dynamically
+if st.session_state.get('theme_mode') == 'Light':
+    st.markdown("""
+    <style>
+    /* Force Light Mode with Enhanced Contrast */
+    :root, [data-theme="light"] {
+        --background-color: #ffffff;
+        --secondary-background-color: #f8fafc;
+        --text-color: #1e293b;
+        color-scheme: light;
+    }
+    .stApp {
+        background-color: #ffffff !important;
+        color: #1e293b !important;
+    }
+    
+    /* Ensure all text has proper contrast in light mode */
+    body, p, span, div, label, li, td, th, a, button {
+        color: #1e293b !important;
+    }
+    
+    /* Streamlit specific elements */
+    .stMarkdown, .stText {
+        color: #1e293b !important;
+    }
+    
+    /* Headings with proper contrast */
+    h1, h2, h3, h4, h5, h6 {
+        color: #0f172a !important;
+    }
+    
+    /* Links with proper contrast */
+    a {
+        color: #DC2626 !important;
+    }
+    a:hover {
+        color: #B91C1C !important;
+    }
+    
+    /* Input fields and form elements */
+    input, textarea, select {
+        background-color: #ffffff !important;
+        color: #1e293b !important;
+        border-color: #cbd5e1 !important;
+    }
+    
+    /* Buttons with proper contrast */
+    button[kind="secondary"] {
+        color: #1e293b !important;
+    }
+    
+    /* Expanders */
+    div[data-testid="stExpander"] summary {
+        color: #1e293b !important;
+    }
+    
+    /* Metric values */
+    [data-testid="stMetricValue"] {
+        color: #0f172a !important;
+    }
+    
+    /* Secondary text - using darker slate for better contrast */
+    .caption, [data-testid="stCaption"] {
+        color: #475569 !important;
+    }
+    
+    /* Code blocks */
+    code {
+        background-color: #f1f5f9 !important;
+        color: #334155 !important;
+    }
+    
+    /* Tables */
+    table {
+        color: #1e293b !important;
+    }
+    th {
+        background-color: #f1f5f9 !important;
+        color: #0f172a !important;
+    }
+    
+    /* Sidebar */
+    section[data-testid="stSidebar"] {
+        background-color: #f8fafc !important;
+        color: #1e293b !important;
+    }
+    
+    /* Dataframes */
+    .dataframe {
+        color: #1e293b !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+# Apply compact mode settings
+if st.session_state.get('compact_mode', False):
+    st.markdown("""
+    <style>
+    /* Compact Mode - Reduce all spacing */
+    .main .block-container {
+        padding-top: 0.25rem !important;
+        padding-bottom: 0.5rem !important;
+    }
+    div[data-testid="stExpander"] {
+        margin-bottom: 0.5rem !important;
+    }
+    div[data-testid="stVerticalBlock"] > div {
+        gap: 0.5rem !important;
+    }
+    .element-container {
+        margin-bottom: 0.5rem !important;
+    }
+    h1, h2, h3, h4, h5, h6 {
+        margin-top: 0.5rem !important;
+        margin-bottom: 0.5rem !important;
+    }
+    p {
+        margin-bottom: 0.5rem !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+# Apply tooltips settings
+if not st.session_state.get('show_tooltips', True):
+    st.markdown("""
+    <style>
+    /* Hide all tooltips when disabled */
+    div[data-testid="stTooltipIcon"] {
+        display: none !important;
+    }
+    [title]:hover::after {
+        display: none !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+
+# Quick Tips Section - Show on button click
+if st.session_state.get('show_tips', False):
+    with st.expander("💡 Quick Tips & Best Practices", expanded=True):
+        tips_col1, tips_col2 = st.columns(2)
+
+        with tips_col1:
+            st.markdown("""
+            ### 🎯 Navigation Tips
+            - **Use Search**: Press `Ctrl+F` to quickly find modules
+            - **Categories**: Browse by category for organized discovery
+            - **Suggested Modules**: Look for 🌟 badges on frequently used modules
+            - **Recent Activity**: Check your usage history to revisit modules
+            
+            ### ⚡ Productivity Hacks
+            - **Favorites**: Star your favorite modules for quick access
+            - **Keyboard Shortcuts**: Use `Tab` to navigate between elements
+            - **Quick Start**: Expand the guide above for step-by-step help
+            """)
+
+        with tips_col2:
+            st.markdown("""
+            ### 🔔 Notifications
+            - Click the 🔔 icon to view test execution results
+            - Notifications show success/failure status with actionable steps
+            - Mark notifications as read to keep your inbox clean
+            
+            ### 📊 Metrics
+            - Monitor your test execution metrics in real-time
+            - Success rate indicator shows test quality at a glance
+            - Track total execution time to optimize performance
+            """)
+
+# Define use cases organized by category with icons and descriptions (needed for search)
+use_case_categories = {
+    "🧪 Test Generation & Intelligence": {
+        "icon": "🧪",
+        "modules": {
+            "TestPilot": {
+                "id": "test_pilot",
+                "icon": "🚀",
+                "description": "AI-powered test automation with Jira/Zephyr integration"
+            },
+            "Dynamic Test Cases": {
+                "id": "dynamic_tc_generation",
+                "icon": "📝",
+                "description": "Generate test cases from requirements"
+            },
+            "Intelligent Test Data": {
+                "id": "intelligent_test_data_generation",
+                "icon": "🎲",
+                "description": "Smart test data generation with realistic values"
+            },
+            "API Generation": {
+                "id": "api_generation",
+                "icon": "🔌",
+                "description": "Generate API tests from specifications"
+            }
+        }
+    },
+    "🔧 Test Maintenance & Quality": {
+        "icon": "🔧",
+        "modules": {
+            "Self-Healing Tests": {
+                "id": "self_healing_tests",
+                "icon": "🔄",
+                "description": "Auto-repair broken tests automatically"
+            },
+            "Visual AI Testing": {
+                "id": "visual_ai_testing",
+                "icon": "👁️",
+                "description": "Visual regression and UI analysis"
+            },
+            "RoboCop Lint Checker": {
+                "id": "robocop_lint_checker",
+                "icon": "🚨",
+                "description": "Static code analysis for quality"
+            },
+            "Smart Test Optimizer": {
+                "id": "smart_test_optimizer",
+                "icon": "⚡",
+                "description": "Optimize test suites for faster execution"
+            },
+            "FOS Quality Checks": {
+                "id": "fos_checks",
+                "icon": "✅",
+                "description": "Front-of-site quality assurance"
+            }
+        }
+    },
+    "🚀 Automation & Integration": {
+        "icon": "🚀",
+        "modules": {
+            "Cross-Platform Orchestrator": {
+                "id": "ai_cross_platform_orchestrator",
+                "icon": "🌐",
+                "description": "Multi-platform test orchestration"
+            },
+            "Performance Testing": {
+                "id": "performance_testing",
+                "icon": "⚡",
+                "description": "Load and performance testing tools"
+            },
+            "Security Penetration Testing": {
+                "id": "security_penetration_testing",
+                "icon": "🛡️",
+                "description": "Automated security vulnerability scanning"
+            },
+            "Browser Agent": {
+                "id": "browser_agent",
+                "icon": "🌍",
+                "description": "AI-powered browser automation"
+            }
+        }
+    },
+    "📊 DevOps & Monitoring": {
+        "icon": "📊",
+        "modules": {
+            "RF Dashboard Analytics": {
+                "id": "rf_dashboard_analytics",
+                "icon": "📈",
+                "description": "Robot Framework insights with AI"
+            },
+            "Jenkins Dashboard": {
+                "id": "jenkins_dashboard",
+                "icon": "🔨",
+                "description": "CI/CD pipeline monitoring"
+            },
+            "EDB Query Manager": {
+                "id": "edb_query_manager",
+                "icon": "🗄️",
+                "description": "EDB account query and management"
+            },
+            "Database Insights": {
+                "id": "database_insights",
+                "icon": "💾",
+                "description": "Database optimization insights"
+            },
+            "AI Environment Manager": {
+                "id": "ai_test_environment_manager",
+                "icon": "🎛️",
+                "description": "Smart environment provisioning"
+            },
+            "Newfold Migration Toolkit": {
+                "id": "newfold_migration_toolkit",
+                "icon": "🔄",
+                "description": "CSRT and RAS operations platform"
+            }
+        }
+    },
+    "📝 Analysis & Documentation": {
+        "icon": "📝",
+        "modules": {
+            "Auto Documentation": {
+                "id": "auto_documentation",
+                "icon": "📄",
+                "description": "Generate documentation automatically"
+            },
+            "Smart CX Navigator": {
+                "id": "smart_cx_navigator",
+                "icon": "🧭",
+                "description": "Customer experience optimization"
+            },
+            "Pull Requests Reviewer": {
+                "id": "pull_requests_reviewer",
+                "icon": "🔍",
+                "description": "AI-powered code review"
+            },
+            "Manual Test Analyzer": {
+                "id": "manual_test_analysis",
+                "icon": "📋",
+                "description": "Analyze and improve manual tests"
+            }
+        }
+    },
+    "🔮 Predictive Intelligence": {
+        "icon": "🔮",
+        "modules": {
+            "AI Bug Predictor": {
+                "id": "intelligent_bug_predictor",
+                "icon": "🐛",
+                "description": "Predict bugs before they occur"
+            },
+            "AI Execution Orchestrator": {
+                "id": "ai_test_execution_orchestrator",
+                "icon": "🎯",
+                "description": "Intelligent test execution"
+            },
+            "AI Quality Guardian": {
+                "id": "ai_quality_assurance_guardian",
+                "icon": "🛡️",
+                "description": "Comprehensive quality assurance"
+            }
+        }
+    }
 }
+
+# Create backward compatibility mapping (flat structure for existing code)
+use_cases = {}
+for category_name, category_data in use_case_categories.items():
+    for module_name, module_info in category_data["modules"].items():
+        use_cases[module_name] = module_info["id"]
+
+# Enhanced Search Bar with functionality
+st.markdown("""
+<style>
+/* Search bar container styling */
+.search-container {
+    background: linear-gradient(135deg, #f8fafc 0%, #ffffff 100%);
+    border: 2px solid #e2e8f0;
+    border-radius: 16px;
+    padding: 1rem 1.5rem;
+    margin-bottom: 1.5rem;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+}
+
+/* Search input styling */
+div[data-testid="stTextInput"] input {
+    font-size: 1.05rem !important;
+    padding: 0.75rem 1rem !important;
+    border: 2px solid #e2e8f0 !important;
+    border-radius: 12px !important;
+    transition: all 0.3s ease !important;
+}
+
+div[data-testid="stTextInput"] input:focus {
+    border-color: #EC5328 !important;
+    box-shadow: 0 0 0 3px rgba(236, 83, 40, 0.1) !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# Search functionality
+search_query = st.text_input(
+    "🔍 Search",
+    placeholder="Search modules, features, or get help... (e.g., 'API testing', 'self-healing', 'bug prediction')",
+    key="module_search",
+    label_visibility="collapsed"
+)
+
+# Search results
+if search_query:
+    st.markdown("### 🔎 Search Results")
+
+    # Search through all modules
+    search_results = []
+    search_lower = search_query.lower()
+
+    for category_name, category_data in use_case_categories.items():
+        for module_name, module_info in category_data["modules"].items():
+            # Search in module name, description, and category
+            if (search_lower in module_name.lower() or
+                search_lower in module_info["description"].lower() or
+                search_lower in category_name.lower() or
+                search_lower in module_info["id"].lower()):
+                search_results.append({
+                    "category": category_name,
+                    "name": module_name,
+                    "info": module_info
+                })
+
+    if search_results:
+        st.success(f"Found {len(search_results)} matching module(s)")
+
+        # Display search results in cards
+        for i in range(0, len(search_results), 4):
+            cols = st.columns(4)
+            for j, result in enumerate(search_results[i:i+4]):
+                with cols[j]:
+                    module_id = result["info"]["id"]
+                    is_active = st.session_state.last_module == module_id
+
+                    st.markdown(f"""
+                    <div style="
+                        background: {'linear-gradient(135deg, #EC5328 0%, #ff6b6b 100%)' if is_active else 'white'};
+                        border: {'3px solid #EC5328' if is_active else '2px solid #e2e8f0'};
+                        border-radius: 12px;
+                        padding: 1rem;
+                        margin-bottom: 1rem;
+                        text-align: center;
+                        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+                    ">
+                        <div style="font-size: 3rem; margin-bottom: 0.5rem;">{result["info"]["icon"]}</div>
+                        <div style="
+                            font-weight: 700;
+                            font-size: 1rem;
+                            color: {'white' if is_active else '#1e293b'};
+                            margin-bottom: 0.5rem;
+                        ">{result["name"]}</div>
+                        <div style="
+                            font-size: 0.85rem;
+                            color: {'rgba(255,255,255,0.9)' if is_active else '#64748b'};
+                            line-height: 1.4;
+                        ">{result["info"]["description"]}</div>
+                        <div style="
+                            font-size: 0.75rem;
+                            color: {'rgba(255,255,255,0.8)' if is_active else '#94a3b8'};
+                            margin-top: 0.5rem;
+                        ">{result["category"]}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    if st.button(f"Open {result['name']}", key=f"search_{module_id}", use_container_width=True):
+                        st.session_state.last_module = module_id
+                        st.session_state.pending_history_module = module_id
+                        st.query_params["module"] = module_id
+                        st.rerun()
+    else:
+        st.warning(f"No modules found matching '{search_query}'. Try searching for:\n- Module names (e.g., 'TestPilot', 'API Generation')\n- Features (e.g., 'self-healing', 'visual testing')\n- Categories (e.g., 'automation', 'analytics')")
+
+# Add helpful info message above search bar with orange theme
+st.markdown("""
+<div style="
+    background: linear-gradient(135deg, rgba(236, 83, 40, 0.15) 0%, rgba(255, 107, 107, 0.15) 100%);
+    border-left: 4px solid #EC5328;
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    box-shadow: 0 2px 8px rgba(236, 83, 40, 0.15);
+">
+    <span style="font-size: 1.5rem;">👇</span>
+    <div style="
+        margin: 0;
+        font-family: 'Inter', sans-serif;
+        font-size: 0.95rem;
+        color: #0f172a !important;
+        line-height: 1.6;
+    ">
+        <strong style="color: #DC2626 !important; font-weight: 700;">Select a module from the categories below</strong> 
+        <span style="color: #0f172a !important;">to get started, or expand the Quick Start Guide and Feature Highlights sections above for more information.</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
 # Add suggested modules based on history
 suggestions = get_suggestions()
 
-# Create a multi-line grid layout for buttons - 4 buttons per row
-num_buttons = len(use_cases)
-buttons_per_row = 4
-num_rows = (num_buttons + buttons_per_row - 1) // buttons_per_row  # Ceiling division
+# Create modern card-based navigation
+for category_name, category_data in use_case_categories.items():
+    st.markdown(f"### {category_name}")
 
-# Create buttons row by row
-use_cases_items = list(use_cases.items())
-for row in range(num_rows):
-    # Create columns for this row
-    start_idx = row * buttons_per_row
-    end_idx = min(start_idx + buttons_per_row, num_buttons)
-    row_items = use_cases_items[start_idx:end_idx]
-    cols = st.columns(len(row_items))
+    modules = category_data["modules"]
+    num_modules = len(modules)
+    cards_per_row = 4
 
-    # Create buttons in this row
-    for i, (case_name, module_name) in enumerate(row_items):
-        with cols[i]:
-            suggest_marker = " 🌟" if module_name in suggestions else ""
-            button_label = f"{case_name}{suggest_marker}"
+    # Create rows of module cards
+    module_items = list(modules.items())
+    for i in range(0, num_modules, cards_per_row):
+        cols = st.columns(cards_per_row)
+        row_modules = module_items[i:i + cards_per_row]
 
-            # Highlight active button with a different style
-            active_button = st.session_state.last_module == module_name
-            button_style = f"""
-            <style>
-            div[data-testid="stHorizontalBlock"] div[data-testid="column"] button[key="nav_{module_name}"] {{
-                background-color: {'#0D47A1' if active_button else '#1E88E5'};
-                color: white;
-                border: {'2px solid #ffffff' if active_button else 'none'};
-                font-weight: {'bold' if active_button else 'normal'};
-            }}
-            div[data-testid="stHorizontalBlock"] div[data-testid="column"] button[key="nav_{module_name}"]:hover {{
-                background-color: #0D47A1;
-                border: 2px solid #ffffff;
-            }}
-            </style>
-            """
-            st.markdown(button_style, unsafe_allow_html=True)
+        for col_idx, (module_name, module_info) in enumerate(row_modules):
+            with cols[col_idx]:
+                module_id = module_info["id"]
+                is_active = st.session_state.last_module == module_id
+                is_suggested = module_id in suggestions
 
-            # Create clickable button for each module
-            if st.button(button_label, key=f"nav_{module_name}",
-                         use_container_width=True,
-                         help=f"Go to {case_name} module"):
-                # Update session state
-                st.session_state.last_module = module_name
+                # Create card with enhanced styling
+                card_class = "module-card-active" if is_active else "module-card"
+                suggest_badge = "🌟 Suggested" if is_suggested else ""
 
-                # Set a pending flag to track this module selection across reruns
-                st.session_state.pending_history_module = module_name
+                st.markdown(f"""
+                <div class="{card_class}" style="
+                    background: {'linear-gradient(135deg, #EC5328 0%, #ff6b6b 100%)' if is_active else 'white'};
+                    border: {'3px solid #EC5328' if is_active else '2px solid #e2e8f0'};
+                    border-radius: 12px;
+                    padding: 20px;
+                    margin-bottom: 16px;
+                    cursor: pointer;
+                    transition: all 0.3s ease;
+                    box-shadow: {'0 8px 16px rgba(236, 83, 40, 0.3)' if is_active else '0 2px 8px rgba(0,0,0,0.1)'};
+                    height: 180px;
+                    display: flex;
+                    flex-direction: column;
+                    justify-content: space-between;
+                    position: relative;
+                    overflow: hidden;
+                ">
+                    <div style="font-size: 48px; margin-bottom: 8px; text-align: center;">
+                        {module_info['icon']}
+                    </div>
+                    <div style="
+                        font-family: 'Inter', sans-serif;
+                        font-weight: 700;
+                        font-size: 16px;
+                        color: {'white' if is_active else '#1e293b'};
+                        text-align: center;
+                        margin-bottom: 8px;
+                    ">
+                        {module_name}
+                    </div>
+                    <div style="
+                        font-family: 'Inter', sans-serif;
+                        font-size: 13px;
+                        color: {'rgba(255,255,255,0.9)' if is_active else '#64748b'};
+                        text-align: center;
+                        line-height: 1.4;
+                    ">
+                        {module_info['description']}
+                    </div>
+                    {f'<div style="position: absolute; top: 10px; right: 10px; background: rgba(255,215,0,0.9); padding: 4px 8px; border-radius: 12px; font-size: 11px; font-weight: 600;">{suggest_badge}</div>' if is_suggested else ''}
+                </div>
+                """, unsafe_allow_html=True)
 
-                # Update query parameters for URL persistence
-                st.query_params["module"] = module_name  # Use direct assignment instead of update method
-
-                # Force a rerun to refresh the UI with the new module
-                st.rerun()
-
-st.markdown('</div>', unsafe_allow_html=True)
-
-# Metrics Dashboard
-with st.container():
-    st.markdown("## 📊 Test Execution Metrics", unsafe_allow_html=True)
-
-    metric_col1, metric_col2, metric_col3 = st.columns(3)
-
-    with metric_col1:
-        st.markdown(
-            f'<div class="metric-card">'
-            f'<h3>{st.session_state.execution_metrics["tests_executed"]}</h3>'
-            f'<p>Tests Executed</p>'
-            f'<div class="metric-icon">🧪</div>'
-            f'</div>',
-            unsafe_allow_html=True
-        )
-
-    with metric_col2:
-        success_rate = 0
-        if st.session_state.execution_metrics["tests_executed"] > 0:
-            success_rate = (st.session_state.execution_metrics["successful_tests"] /
-                            st.session_state.execution_metrics["tests_executed"]) * 100
-
-        st.markdown(
-            f'<div class="metric-card">'
-            f'<h3>{success_rate:.1f}%</h3>'
-            f'<p>Success Rate</p>'
-            f'<div class="metric-icon">✓</div>'
-            f'</div>',
-            unsafe_allow_html=True
-        )
-
-    with metric_col3:
-        st.markdown(
-            f'<div class="metric-card">'
-            f'<h3>{st.session_state.execution_metrics["execution_time"]:.1f}s</h3>'
-            f'<p>Total Execution Time</p>'
-            f'<div class="metric-icon">⏱️</div>'
-            f'</div>',
-            unsafe_allow_html=True
-        )
-
-    st.markdown('</div>', unsafe_allow_html=True)
+                # Create invisible button for navigation
+                if st.button(f"Open {module_name}", key=f"nav_{module_id}", use_container_width=True):
+                    # Check module access if auth is enabled
+                    if AUTH_ENABLED and st_auth and not st_auth.check_module_access(module_id, Permission.VIEW_MODULE):
+                        st.error(f"⛔ Access Denied: You do not have permission to access '{module_name}'")
+                        st.info("Contact your administrator to request access to this module.")
+                    else:
+                        st.session_state.last_module = module_id
+                        st.session_state.pending_history_module = module_id
+                        st.query_params["module"] = module_id
+                        # Set flag to indicate this is a navigation button click (for auto-scroll)
+                        st.session_state._nav_button_clicked = True
+                        st.rerun()
 
 # Check for URL anchor or query param to determine which tab to show
 query_params = st.query_params
@@ -2171,14 +3667,122 @@ if st.session_state.get('_component_callback', False):
         # Update URL for consistency
         st.query_params.update(module=selected_module)
 
-# Content section with line separator
-st.markdown("---")
-
 with st.container():
-    st.markdown('<div class="content-section">', unsafe_allow_html=True)
-
     # If a specific tab was selected in the URL or callback
     if selected_module in use_cases.values():
+        # Check if this rerun was triggered by a navigation button click
+        # Only scroll when the "Open {module_name}" button was clicked
+        nav_button_clicked = st.session_state.get('_nav_button_clicked', False)
+
+        # Clear the flag immediately so it doesn't trigger on subsequent reruns
+        if nav_button_clicked:
+            st.session_state._nav_button_clicked = False
+
+        # Auto-scroll to module content section ONLY when navigation button was clicked
+        if nav_button_clicked:
+            # Use unique key based on selected module to force re-execution on every module change
+            import streamlit.components.v1 as components
+            import hashlib
+            import time
+
+            # Create unique identifier to force component reload on every module change
+            scroll_key = hashlib.md5(f"{selected_module}_{time.time()}".encode()).hexdigest()
+
+            components.html(f"""
+            <!-- Auto-scroll component for module: {selected_module} | Key: {scroll_key} -->
+            <script>
+            // Robust auto-scroll with multiple attempts - scrolls to breadcrumb
+            (function() {{
+                let attempts = 0;
+                const maxAttempts = 10;
+                const scrollDelays = [100, 300, 500, 800, 1000, 1200, 1500, 2000, 2500, 3000];
+                const moduleId = '{selected_module}';
+                const scrollKey = '{scroll_key}';
+                
+                console.log('Auto-scroll initialized for module:', moduleId, 'Key:', scrollKey);
+                
+                function tryScroll() {{
+                    if (attempts >= maxAttempts) {{
+                        console.log('Max scroll attempts reached for module:', moduleId);
+                        return;
+                    }}
+                    
+                    try {{
+                        const element = window.parent.document.getElementById('module-breadcrumb-{selected_module}');
+                        if (element && element.offsetParent !== null) {{
+                            // Element exists and is visible - scroll to breadcrumb
+                            element.scrollIntoView({{ 
+                                behavior: 'smooth', 
+                                block: 'start',
+                                inline: 'nearest'
+                            }});
+                            console.log('Successfully scrolled to breadcrumb for module:', moduleId);
+                            return; // Success, stop trying
+                        }}
+                    }} catch (e) {{
+                        console.log('Scroll attempt', attempts + 1, 'failed:', e);
+                    }}
+                    
+                    // Try again with next delay
+                    attempts++;
+                    if (attempts < maxAttempts) {{
+                        setTimeout(tryScroll, scrollDelays[attempts]);
+                    }}
+                }}
+                
+                // Start trying immediately and continue with retries
+                tryScroll();
+            }})();
+            </script>
+            """, height=0)
+
+        # Add breadcrumb navigation
+        module_display_name = get_module_friendly_name(selected_module)
+
+        # Find which category this module belongs to
+        module_category = None
+        for cat_name, cat_data in use_case_categories.items():
+            for mod_name, mod_info in cat_data["modules"].items():
+                if mod_info["id"] == selected_module:
+                    module_category = cat_name
+                    break
+            if module_category:
+                break
+
+        # Breadcrumb navigation with working anchor link and scroll target ID
+        st.markdown(f"""
+        <div id="module-breadcrumb-{selected_module}" style="
+            background: linear-gradient(135deg, #f8fafc 0%, #ffffff 100%);
+            border: 2px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 1rem 1.5rem;
+            margin-bottom: 2rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            font-family: 'Inter', sans-serif;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        ">
+            <a href="?module=" target="_self" style="
+                color: #475569;
+                text-decoration: none;
+                font-weight: 500;
+                transition: color 0.3s ease;
+            " onmouseover="this.style.color='#EC5328'" onmouseout="this.style.color='#475569'">
+                🏠 Home
+            </a>
+            <span style="color: #64748b;">→</span>
+            <span style="color: #475569; font-weight: 500;">{module_category}</span>
+            <span style="color: #64748b;">→</span>
+            <span style="
+                color: #DC2626;
+                font-weight: 700;
+                background: rgba(236, 83, 40, 0.1);
+                padding: 0.25rem 0.75rem;
+                border-radius: 6px;
+            ">{module_display_name}</span>
+        </div>
+        """, unsafe_allow_html=True)
         # Update the last module in session state for UI consistency
         if st.session_state.last_module != selected_module:
             st.session_state.last_module = selected_module
@@ -2187,24 +3791,151 @@ with st.container():
         # Get the module name for display
         module_display_name = get_module_friendly_name(selected_module)
 
-        # Import the module but don't run any actions automatically
-        try:
-            # Update the import path to use correct relative import
-            module_path = f"scripts.gen_ai.use_cases.{selected_module}"
-            try:
-                module = importlib.import_module(module_path)
-            except ModuleNotFoundError:
-                # Try an alternative import path if the first attempt fails
-                module_path = f"gen_ai.use_cases.{selected_module}"
-                module = importlib.import_module(module_path)
+        # ============================================================================
+        # ACCESS CONTROL CHECK
+        # ============================================================================
+        if AUTH_ENABLED and st_auth:
+            # Check if user has access to view this module
+            if not st_auth.check_module_access(selected_module, Permission.VIEW_MODULE):
+                st.error(f"⛔ Access Denied: {module_display_name}")
+                st.warning(f"""
+                You do not have permission to access this module.
+                
+                **Your current roles:** {', '.join(current_user.roles)}
+                
+                Please contact your administrator to request access to this module.
+                """)
 
-            # Show UI components for the module
-            if hasattr(module, "show_ui"):
-                module.show_ui()
-            else:
-                # If the module doesn't have a show_ui function, show a placeholder interface
-                st.info(f"This module ({module_display_name}) is not fully implemented yet.")
-                st.write("Coming soon! This section will provide:")
+                # Log access denial
+                st.session_state.audit_logger.log(
+                    action=AuditAction.ACCESS_DENIED,
+                    username=current_user.username,
+                    user_id=current_user.user_id,
+                    success=False,
+                    severity=AuditSeverity.WARNING,
+                    module_id=selected_module,
+                    session_id=st.session_state.auth_session_id
+                )
+                st.stop()
+
+            # Log module view
+            st.session_state.audit_logger.log(
+                action=AuditAction.MODULE_VIEW,
+                username=current_user.username,
+                user_id=current_user.user_id,
+                success=True,
+                severity=AuditSeverity.INFO,
+                module_id=selected_module,
+                session_id=st.session_state.auth_session_id
+            )
+
+        # Show loading spinner while importing and rendering the module
+        with st.spinner(f'🔄 Loading {module_display_name}...'):
+            # Import the module but don't run any actions automatically
+            try:
+                # Update the import path to use correct relative import
+                module_path = f"scripts.gen_ai.use_cases.{selected_module}"
+                try:
+                    module = importlib.import_module(module_path)
+                except ModuleNotFoundError:
+                    # Try an alternative import path if the first attempt fails
+                    module_path = f"gen_ai.use_cases.{selected_module}"
+                    module = importlib.import_module(module_path)
+
+                # Show UI components for the module
+                if hasattr(module, "show_ui"):
+                    module.show_ui()
+                else:
+                    # If the module doesn't have a show_ui function, show a placeholder interface
+                    st.info(f"This module ({module_display_name}) is not fully implemented yet.")
+                    st.write("Coming soon! This section will provide:")
+
+                    descriptions = {
+                        "dynamic_tc_generation": "Tools for dynamically generating test cases based on application behavior and requirements.",
+                        "intelligent_test_data_generation": "Smart test data generation with realistic and edge-case values.",
+                        "self_healing_tests": "Automated repair of broken tests when UI elements change.",
+                        "visual_ai_testing": "AI-powered visual regression testing and UI analysis.",
+                        "api_generation": "Automatic generation of API tests based on specifications or existing endpoints.",
+                        "auto_documentation": "Automated generation of test documentation from code and test results.",
+                        "performance_testing": "Tools for performance testing and optimisation.",
+                        "robocop_lint_checker": "Static code analysis for Python to enforce coding standards and detect errors.",
+                        "smart_cx_navigator": "AI-driven navigation and insights for customer experience optimization.",
+                        "security_penetration_testing": "Tools for automated security testing and vulnerability scanning.",
+                        "pull_requests_reviewer": "AI-powered review of pull requests for code quality and compliance.",
+                        "database_insights": "Intelligent insights and optimization suggestions for database performance.",
+                        "jenkins_dashboard": "Integration with Jenkins for CI/CD pipeline monitoring and management.",
+                        "rf_dashboard_analytics": "Robot Framework Dashboard Analytics - AI-powered insights from Jenkins test results with trend analysis, failure prediction, and optimization recommendations.",
+                        "fos_checks": "Quality checks for FOS projects",
+                        "intelligent_bug_predictor": "AI-powered bug prediction and analysis",
+                        "smart_test_optimizer": "AI-driven test optimization and flakiness detection",
+                        "ai_cross_platform_orchestrator": "Orchestrate tests across multiple platforms and devices",
+                        "ai_test_environment_manager": "Automate setup and management of test environments",
+                        "manual_test_analysis": "Analyze and improve manual test cases with AI assistance",
+                        "ai_test_execution_orchestrator": "AI Execution Orchestrator",
+                        "ai_quality_assurance_guardian": "AI Quality Guardian",
+                        "browser_agent": "Browser Agent - AI-powered browser automation and testing",
+                        "test_pilot": "TestPilot - AI-powered test automation assistant that fetches test cases from Jira/Zephyr, interprets steps, and generates Robot Framework scripts with intelligent keyword reuse",
+                        "edb_query_manager": "EDB Query Manager - Comprehensive EDB account query and management with AI-powered insights for account lookup, domain queries, and product information",
+                        "newfold_migration_toolkit": "Newfold Migration Toolkit - CSRT and RAS operations for product lifecycle management and migration testing"
+                    }
+
+                    st.write(descriptions.get(selected_module, "Features related to this use case."))
+
+                    # Show placeholder UI for demonstration purposes
+                    st.warning("This is a placeholder UI. The actual functionality is under development.")
+
+                    # Show placeholder controls based on the module type
+                    if selected_module == "dynamic_tc_generation":
+                        # Skip showing placeholder UI for dynamic test case generation
+                        # The module already has its own UI implementation
+                        pass
+                    elif selected_module == "intelligent_test_data_generation":
+                        pass
+                        # st.file_uploader("Upload Form Screenshot", type=["png", "jpg", "jpeg"], key=f"{selected_module}_uploader")
+                        # st.text_input("Field Name", key=f"{selected_module}_field")
+                        # st.selectbox("Field Type", ["Email", "Password", "Phone", "Date", "Name"], key=f"{selected_module}_type")
+                        # st.button("Generate Test Data", key=f"{selected_module}_button")
+
+                    elif selected_module == "self_healing_tests":
+                        st.file_uploader("Upload Failed Test Report", type=["xml", "json", "html"],
+                                         key=f"{selected_module}_uploader")
+                        st.selectbox("Healing Strategy", ["Fuzzy Matching", "Computer Vision", "DOM Analysis"],
+                                     key=f"{selected_module}_strategy")
+                        st.button("Repair Tests", key=f"{selected_module}_button")
+
+                    elif selected_module == "visual_ai_testing":
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.file_uploader("Upload Baseline Image", type=["png", "jpg", "jpeg"],
+                                             key=f"{selected_module}_baseline")
+                        with col2:
+                            st.file_uploader("Upload Comparison Image", type=["png", "jpg", "jpeg"],
+                                             key=f"{selected_module}_comparison")
+                        st.slider("Sensitivity", 0.0, 1.0, 0.8, key=f"{selected_module}_sensitivity")
+                        st.button("Compare Images", key=f"{selected_module}_button")
+
+                    elif selected_module == "api_generation":
+                        st.file_uploader("Upload API Specification", type=["yaml", "json"],
+                                         key=f"{selected_module}_uploader")
+                        st.text_input("API Endpoint", key=f"{selected_module}_endpoint")
+                        st.selectbox("Test Framework", ["Postman", "RestAssured", "Requests"],
+                                     key=f"{selected_module}_framework")
+                        st.button("Generate API Tests", key=f"{selected_module}_button")
+
+                    elif selected_module == "auto_documentation":
+                        st.file_uploader("Upload Test Results", accept_multiple_files=True,
+                                         key=f"{selected_module}_uploader")
+                        st.text_input("Project Name", key=f"{selected_module}_project")
+                        st.selectbox("Documentation Format", ["HTML", "PDF", "Markdown", "Word"],
+                                     key=f"{selected_module}_format")
+                        st.button("Generate Documentation", key=f"{selected_module}_button")
+
+            except ImportError as e:
+                st.error(f"Module {selected_module} not found. Please make sure it exists in the use_cases directory.")
+                st.code(f"Error: {e}")
+                # If the module doesn't exist yet, show a placeholder
+                st.info(f"This module ({selected_module}) hasn't been implemented yet.")
+                st.write("When implemented, this section will contain:")
 
                 descriptions = {
                     "dynamic_tc_generation": "Tools for dynamically generating test cases based on application behavior and requirements.",
@@ -2229,174 +3960,40 @@ with st.container():
                     "manual_test_analysis": "Analyze and improve manual test cases with AI assistance",
                     "ai_test_execution_orchestrator": "AI Execution Orchestrator",
                     "ai_quality_assurance_guardian": "AI Quality Guardian",
-                    "browser_agent": "Browser Agent - AI-powered browser automation and testing"
+                    "browser_agent": "Browser Agent - AI-powered browser automation and testing",
+                    "test_pilot": "TestPilot - AI-powered test automation assistant that fetches test cases from Jira/Zephyr, interprets steps, and generates Robot Framework scripts with intelligent keyword reuse",
+                    "edb_query_manager": "EDB Query Manager - Comprehensive EDB account query and management with AI-powered insights for account lookup, domain queries, and product information",
+                    "newfold_migration_toolkit": "Newfold Migration Toolkit - CSRT and RAS operations for product lifecycle management and migration testing"
                 }
 
                 st.write(descriptions.get(selected_module, "Features related to this use case."))
 
-                # Show placeholder UI for demonstration purposes
-                st.warning("This is a placeholder UI. The actual functionality is under development.")
+            # Add favorite button
+            col1, col2 = st.columns([9, 1])
+            with col2:
+                is_favorite = selected_module in st.session_state.favorites
+                if st.button("★" if is_favorite else "☆", key=f"fav_{selected_module}"):
+                    if is_favorite:
+                        st.session_state.favorites.remove(selected_module)
+                    else:
+                        st.session_state.favorites.append(selected_module)
+                    st.rerun()
 
-                # Show placeholder controls based on the module type
-                if selected_module == "dynamic_tc_generation":
-                    # Skip showing placeholder UI for dynamic test case generation
-                    # The module already has its own UI implementation
-                    pass
-                elif selected_module == "intelligent_test_data_generation":
-                    pass
-                    # st.file_uploader("Upload Form Screenshot", type=["png", "jpg", "jpeg"], key=f"{selected_module}_uploader")
-                    # st.text_input("Field Name", key=f"{selected_module}_field")
-                    # st.selectbox("Field Type", ["Email", "Password", "Phone", "Date", "Name"], key=f"{selected_module}_type")
-                    # st.button("Generate Test Data", key=f"{selected_module}_button")
-
-                elif selected_module == "self_healing_tests":
-                    st.file_uploader("Upload Failed Test Report", type=["xml", "json", "html"],
-                                     key=f"{selected_module}_uploader")
-                    st.selectbox("Healing Strategy", ["Fuzzy Matching", "Computer Vision", "DOM Analysis"],
-                                 key=f"{selected_module}_strategy")
-                    st.button("Repair Tests", key=f"{selected_module}_button")
-
-                elif selected_module == "visual_ai_testing":
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.file_uploader("Upload Baseline Image", type=["png", "jpg", "jpeg"],
-                                         key=f"{selected_module}_baseline")
-                    with col2:
-                        st.file_uploader("Upload Comparison Image", type=["png", "jpg", "jpeg"],
-                                         key=f"{selected_module}_comparison")
-                    st.slider("Sensitivity", 0.0, 1.0, 0.8, key=f"{selected_module}_sensitivity")
-                    st.button("Compare Images", key=f"{selected_module}_button")
-
-                elif selected_module == "api_generation":
-                    st.file_uploader("Upload API Specification", type=["yaml", "json"],
-                                     key=f"{selected_module}_uploader")
-                    st.text_input("API Endpoint", key=f"{selected_module}_endpoint")
-                    st.selectbox("Test Framework", ["Postman", "RestAssured", "Requests"],
-                                 key=f"{selected_module}_framework")
-                    st.button("Generate API Tests", key=f"{selected_module}_button")
-
-                elif selected_module == "auto_documentation":
-                    st.file_uploader("Upload Test Results", accept_multiple_files=True,
-                                     key=f"{selected_module}_uploader")
-                    st.text_input("Project Name", key=f"{selected_module}_project")
-                    st.selectbox("Documentation Format", ["HTML", "PDF", "Markdown", "Word"],
-                                 key=f"{selected_module}_format")
-                    st.button("Generate Documentation", key=f"{selected_module}_button")
-
-        except ImportError as e:
-            st.error(f"Module {selected_module} not found. Please make sure it exists in the use_cases directory.")
-            st.code(f"Error: {e}")
-            # If the module doesn't exist yet, show a placeholder
-            st.info(f"This module ({selected_module}) hasn't been implemented yet.")
-            st.write("When implemented, this section will contain:")
-
-            descriptions = {
-                "dynamic_tc_generation": "Tools for dynamically generating test cases based on application behavior and requirements.",
-                "intelligent_test_data_generation": "Smart test data generation with realistic and edge-case values.",
-                "self_healing_tests": "Automated repair of broken tests when UI elements change.",
-                "visual_ai_testing": "AI-powered visual regression testing and UI analysis.",
-                "api_generation": "Automatic generation of API tests based on specifications or existing endpoints.",
-                "auto_documentation": "Automated generation of test documentation from code and test results.",
-                "performance_testing": "Tools for performance testing and optimisation.",
-                "robocop_lint_checker": "Static code analysis for Python to enforce coding standards and detect errors.",
-                "smart_cx_navigator": "AI-driven navigation and insights for customer experience optimization.",
-                "security_penetration_testing": "Tools for automated security testing and vulnerability scanning.",
-                "pull_requests_reviewer": "AI-powered review of pull requests for code quality and compliance.",
-                "database_insights": "Intelligent insights and optimization suggestions for database performance.",
-                "jenkins_dashboard": "Integration with Jenkins for CI/CD pipeline monitoring and management.",
-                "rf_dashboard_analytics": "Robot Framework Dashboard Analytics - AI-powered insights from Jenkins test results with trend analysis, failure prediction, and optimization recommendations.",
-                "fos_checks": "Quality checks for FOS projects",
-                "intelligent_bug_predictor": "AI-powered bug prediction and analysis",
-                "smart_test_optimizer": "AI-driven test optimization and flakiness detection",
-                "ai_cross_platform_orchestrator": "Orchestrate tests across multiple platforms and devices",
-                "ai_test_environment_manager": "Automate setup and management of test environments",
-                "manual_test_analysis": "Analyze and improve manual test cases with AI assistance",
-                "ai_test_execution_orchestrator": "AI Execution Orchestrator",
-                "ai_quality_assurance_guardian": "AI Quality Guardian",
-                "browser_agent": "Browser Agent - AI-powered browser automation and testing",
-                "test_pilot": "TestPilot - AI-powered test automation assistant that fetches test cases from Jira/Zephyr, interprets steps, and generates Robot Framework scripts with intelligent keyword reuse"
-            }
-
-            st.write(descriptions.get(selected_module, "Features related to this use case."))
-
-        # Add favorite button
-        col1, col2 = st.columns([9, 1])
-        with col2:
-            is_favorite = selected_module in st.session_state.favorites
-            if st.button("★" if is_favorite else "☆", key=f"fav_{selected_module}"):
-                if is_favorite:
-                    st.session_state.favorites.remove(selected_module)
-                else:
-                    st.session_state.favorites.append(selected_module)
-                st.rerun()
-    else:
-        # Show welcome screen when no module is selected
-        st.markdown("## 👋 Welcome to \"The Vortex\"")
-        st.markdown("""
-        Click on one of the options above to get started with our comprehensive suite of AI-powered testing tools:
-
-        ### 🧪 Test Generation & Data
-        - **Dynamic Test Cases**: Generate test cases based on application behavior and requirements
-        - **Intelligent Test Data**: Create realistic test data for your test cases
-        - **TestPilot**: AI-powered assistant that fetches test cases from Jira/Zephyr and converts them to Robot Framework scripts with intelligent keyword reuse
-        - **FOS Quality Checks**: Comprehensive front-of-site quality assurance including console error detection, media analysis, link crawling, accessibility audits, performance monitoring, and network analysis
-
-        ### 🔧 Test Maintenance & Quality
-        - **Self-Healing Tests**: Automatically repair broken tests when UI elements change
-        - **Visual AI Testing**: Perform visual regression testing and UI analysis
-        - **RoboCop Lint Checker**: Static code analysis for Python to enforce coding standards
-        - **Smart Test Optimizer**: AI-driven test suite optimization to reduce execution time by up to 70%
-
-        ### 🚀 Automation & Integration
-        - **API Generation**: Generate API tests based on specifications or existing endpoints
-        - **Performance Testing**: Tools for performance testing and optimization
-        - **Security Penetration Testing**: Automated security testing and vulnerability scanning
-        - **Cross-Platform Orchestrator**: Intelligent cross-browser and cross-platform testing automation
-
-        ### 📊 DevOps & Monitoring
-        - **Jenkins Dashboard**: Integration with Jenkins for CI/CD pipeline monitoring
-        - **RF Dashboard Analytics**: AI-powered Robot Framework test insights from Jenkins with trend analysis, failure prediction, and optimization recommendations
-        - **Pull Requests Reviewer**: AI-powered review of pull requests for code quality
-        - **Database Insights**: Intelligent insights and optimization for database performance
-        - **AI Environment Manager**: Smart test environment provisioning and data management
-
-        ### 📝 Documentation & Analysis
-        - **Auto Documentation**: Automate test documentation from code and test results
-        - **Smart CX Navigator**: AI-driven navigation and insights for customer experience optimization
-        - **Manual Test Analyzer**: Transform manual testing with AI-powered analysis and automation recommendations
-
-        ### 🔮 Predictive Intelligence
-        - **AI Bug Predictor**: Leverage AI to predict potential bugs before they occur in production using code complexity patterns, historical data, and developer patterns
-
-        ### 💰 Time & Cost Savings
-        Our advanced AI modules can save your team significant time and effort:
-        - **70% reduction** in test execution time with Smart Test Optimizer
-        - **Automated bug prediction** preventing production issues
-        - **ROI calculator** showing payback periods for automation investments
-        - **Cross-platform optimization** reducing testing costs across multiple environments
-
-        Use the search bar above to find specific features or get help with any of these modules.
-        """)
-
-        # Add a dashboard or recent activity section
-        st.markdown("### 📊 Recent Activity")
-        if st.session_state.history:
-            st.markdown("Here are your last 5 activities:")
-            # Display the last 5 activities in a table
-            recent_activities = st.session_state.history[-5:]
-            recent_df = pd.DataFrame(recent_activities)
-            recent_df['timestamp'] = pd.to_datetime(recent_df['timestamp'])
-            recent_df = recent_df.sort_values(by='timestamp', ascending=False)
-            recent_df = recent_df[['module', 'timestamp']]
-            recent_df.columns = ['Module', 'Timestamp']
-            recent_df['Timestamp'] = recent_df['Timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
-            recent_df.reset_index(drop=True, inplace=True)
-            st.markdown("#### Last 5 Activities")
-            st.dataframe(recent_df, use_container_width=True)
-        else:
-            st.markdown('<div style="background-color: var(--primary-color); padding: 10px; border-radius: var(--border-radius-md); color: white;">No recent activity. Start by clicking on one of the use case options above.</div>', unsafe_allow_html=True)
-
-    st.markdown('</div>', unsafe_allow_html=True)
+# Add keyboard shortcuts info - moved right after module overview
+with st.expander("⌨️ Keyboard Shortcuts", expanded=False):
+    st.markdown("""
+    ### Quick Navigation Shortcuts
+    
+    | Shortcut | Action |
+    |----------|--------|
+    | `Ctrl + F` or `Cmd + F` | Focus search bar |
+    | `Ctrl + Home` or `Cmd + ↑` | Scroll to top |
+    | `Ctrl + End` or `Cmd + ↓` | Scroll to bottom |
+    | `Tab` | Navigate between elements |
+    | `Enter` | Activate focused button |
+    
+    **Pro Tip:** Use the search bar to quickly find modules by name, feature, or category!
+    """)
 
 # Feedback section
 with st.expander("Provide Feedback", expanded=False):
@@ -2430,69 +4027,48 @@ if len(st.session_state.feedback_data) > 0:
         else:
             st.info("No feedback history available.")
 
-# Add 3D animation for star particles
-import streamlit.components.v1 as components
-
-components.html(
-    """
-    <div id='star-animation-container' style='position: fixed; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: -1;'>
-        <canvas id='star-animation'></canvas>
-    </div>
-    <script>
-        const canvas = document.getElementById('star-animation');
-        const ctx = canvas.getContext('2d');
-        canvas.width = window.innerWidth;
-        canvas.height = window.innerHeight;
-
-        const stars = Array.from({ length: 100 }, () => ({
-            x: Math.random() * canvas.width,
-            y: Math.random() * canvas.height,
-            z: Math.random() * canvas.width,
-        }));
-
-        function drawStars() {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            stars.forEach(star => {
-                const perspective = canvas.width / (canvas.width + star.z);
-                const x = star.x * perspective;
-                const y = star.y * perspective;
-                const size = perspective * 2;
-
-                ctx.beginPath();
-                ctx.arc(x, y, size, 0, Math.PI * 2);
-                ctx.fillStyle = 'white';
-                ctx.fill();
-
-                star.z -= 2;
-                if (star.z < 0) {
-                    star.z = canvas.width;
-                }
-            });
-        }
-
-        function animate() {
-            drawStars();
-            requestAnimationFrame(animate);
-        }
-
-        animate();
-
-        window.addEventListener('resize', () => {
-            canvas.width = window.innerWidth;
-            canvas.height = window.innerHeight;
-        });
-    </script>
-    """,
-    height=0
-)
-
-# Ensure compatibility with Streamlit components
-import streamlit.components.v1 as components
-
-# Add footer
-st.markdown("---")
 st.markdown("""
-<div style="text-align: center; color: #888; padding: 10px;">
-    <p>THE VORTEX © 2025</p>
+<style>
+/* Ensure footer stays at bottom with minimal gap */
+.main .block-container {
+    padding-bottom: 0.5rem !important;
+}
+</style>
+<div style="
+    background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+    border-radius: 16px;
+    padding: 1.5rem 2rem;
+    text-align: center;
+    margin-top: 1rem;
+    margin-bottom: 0;
+">
+    <div style="
+        font-family: 'Inter', sans-serif;
+        font-size: 1.5rem;
+        font-weight: 800;
+        background: linear-gradient(135deg, #EC5328, #ff6b6b);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        margin-bottom: 0.5rem;
+    ">🌀The Vortex</div>
+    <div style="
+        font-family: 'Inter', sans-serif;
+        font-size: 0.95rem;
+        color: #475569;
+        margin-bottom: 0.75rem;
+    ">Virtual Orchestrator for Real-world Technology EXcellence</div>
+    <div style="
+        font-family: 'Inter', sans-serif;
+        font-size: 0.85rem;
+        color: #64748b;
+    ">
+        🌀The Vortex - Built with ❤️ for Quality & AI Engineering Excellence © 2025-26
+        <br>
+        <span style="font-size: 0.75rem; margin-top: 0.5rem; display: inline-block;">
+            Contact: <a href="mailto:siddhant.wadhwani@newfold.com" style="color: #EC5328; text-decoration: none;">Siddhant Wadhwani</a>
+        </span>
+    </div>
 </div>
 """, unsafe_allow_html=True)
+

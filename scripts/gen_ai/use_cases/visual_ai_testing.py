@@ -41,16 +41,23 @@ except ImportError:
     NOTIFICATIONS_AVAILABLE = False
     print("Notifications module not available. Notification features will be disabled.")
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("visual_ai_testing.log"),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger("VisualAITesting")
+# Configure logging with enhanced features
+try:
+    from enhanced_logging import get_logger, EmojiIndicators, PerformanceTimer, ProgressTracker
+    logger = get_logger("VisualAITesting", level=logging.INFO, log_file="visual_ai_testing.log")
+    ENHANCED_LOGGING = True
+except ImportError:
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler("visual_ai_testing.log"),
+            logging.StreamHandler()
+        ]
+    )
+    logger = logging.getLogger("VisualAITesting")
+    ENHANCED_LOGGING = False
+
 
 # Set path for saving reports and images
 REPORTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
@@ -756,14 +763,6 @@ def show_visual_ai_analytics():
         st.warning("⚠️ AI features limited - Azure OpenAI not available")
         st.info("Install and configure Azure OpenAI client for full AI capabilities")
 
-    with tab4:
-        show_figma_matching_ui()
-
-    with tab5:
-        show_accessibility_testing_ui()
-
-    with tab6:
-        show_advanced_comparison_ui()
 
 def show_image_comparison_ui():
     """UI for comparing two images"""

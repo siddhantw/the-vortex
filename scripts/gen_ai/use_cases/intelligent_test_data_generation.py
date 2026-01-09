@@ -11,42 +11,6 @@ import requests
 import hashlib
 import fnmatch
 import io
-import sys
-import time
-import logging
-import urllib.parse
-import requests
-import hashlib
-import fnmatch
-import io
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-import sys
-import time
-import logging
-import urllib.parse
-import requests
-import hashlib
-import fnmatch
-import io
-import sys
-import time
-import logging
-import urllib.parse
-import requests
-import hashlib
-import fnmatch
-import io
-import sys
-import time
-import logging
-import urllib.parse
-import requests
-import hashlib
-import fnmatch
-import io
 from collections import defaultdict
 from typing import Dict, List, Any, Optional, Tuple, Union
 from dataclasses import dataclass
@@ -60,6 +24,16 @@ import pandas as pd
 import pytesseract
 import streamlit as st
 from PIL import Image, ImageEnhance, ImageFilter
+
+# Enhanced logging setup
+try:
+    from enhanced_logging import get_logger, EmojiIndicators, PerformanceTimer, ProgressTracker
+    logger = get_logger("IntelligentTestData", level=logging.INFO, log_file="intelligent_test_data.log")
+except ImportError:
+    # Fallback to standard logging if enhanced_logging is not available
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+    print("Warning: Enhanced logging not available, using standard logging")
 
 # Selenium imports for web automation
 try:
@@ -104,9 +78,6 @@ try:
 except ImportError:
     NOTIFICATIONS_AVAILABLE = False
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 if __name__ == "__main__":
     st.set_page_config(page_title="Intelligent Test Data Generator", page_icon="🧪", layout="wide")
@@ -3843,12 +3814,26 @@ if __name__ == "__main__":
     
     def _generate_cross_field_tests_python(self, fields: List[FormField]) -> str:
         """Generate cross-field validation tests"""
+        # Build field data strings separately to avoid f-string nesting issues
+        field_data_lines = []
+        for field in fields:
+            sample_data = self._get_sample_valid_data(field)
+            value = sample_data[0] if sample_data else '""'
+            field_data_lines.append(f'            "{field.name}": {value},\n')
+
+        required_field_lines = []
+        for field in fields:
+            if field.required:
+                sample_data = self._get_sample_valid_data(field)
+                value = sample_data[0] if sample_data else '""'
+                required_field_lines.append(f'            "{field.name}": {value},\n')
+
         return '''
     def test_form_complete_valid_submission(self):
         """Test complete form submission with all valid data"""
         # Fill all fields with valid data
         test_data = {
-''' + ''.join([f'            "{field.name}": {self._get_sample_valid_data(field)[0] if self._get_sample_valid_data(field) else '""'},\n' for field in fields]) + '''        }
+''' + ''.join(field_data_lines) + '''        }
         
         for field_name, value in test_data.items():
             assert self.fill_form_field(field_name, value), f"Failed to fill {field_name}"
@@ -3865,7 +3850,7 @@ if __name__ == "__main__":
     def test_form_partial_submission(self):
         """Test form submission with only required fields"""
         required_fields = {
-''' + ''.join([f'            "{field.name}": {self._get_sample_valid_data(field)[0] if self._get_sample_valid_data(field) else '""'},\n' for field in fields if field.required]) + '''        }
+''' + ''.join(required_field_lines) + '''        }
         
         for field_name, value in required_fields.items():
             assert self.fill_form_field(field_name, value), f"Failed to fill required field {field_name}"
